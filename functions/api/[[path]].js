@@ -238,11 +238,22 @@ async function deleteResource(db, name, id) {
 // import window (GET /api/admin/import-columns), so the two never disagree.
 // required: true = must be in the file; a string = required in that situation.
 const PROPERTY_COLUMN = {
-  key: 'property', name: 'Property', required: 'Only if the file covers more than one property',
-  aliases: ['property', 'property name', 'property_name', 'property code', 'property_code', 'rm_property_code'],
-  example: 'Campus Walk Apartments  or  cwa',
-  help: 'Property name or Rent Manager code. Leave the column out to use the property picked in this window.',
+  key: 'property', name: 'Property', required: true,
+  aliases: ['property', 'property code', 'property_code', 'property short name', 'short name', 'shortname', 'rm_property_code', 'rm code', 'property id'],
+  example: 'cwa',
+  help: "The property's short name: its Rent Manager property code, as entered in Edit property. Needed on every row.",
 };
+
+/** Finds a property by its short name (Rent Manager code), ignoring case. Throws a row error if not found. */
+function propertyByCode(props, value) {
+  if (blank(value)) throw new Error('property short name is missing');
+  const k = String(value).trim().toLowerCase();
+  const p = props.find((x) => (x.rm_property_code || '').trim().toLowerCase() === k);
+  if (p) return p;
+  const byName = props.find((x) => x.name.trim().toLowerCase() === k);
+  if (byName) throw new Error(`"${value}" is a property name; use its short name${byName.rm_property_code ? ` "${byName.rm_property_code}"` : ' (set one in Edit property first)'}`);
+  throw new Error(`no property has the short name "${value}"`);
+}
 
 const TENANT_COLUMNS = [
   PROPERTY_COLUMN,
@@ -255,8 +266,8 @@ const TENANT_COLUMNS = [
   { key: 'email', name: 'Email', required: false, aliases: ['email', 'email address', 'e-mail'], example: 'paul@example.com',
     help: 'Needed to email statements and for the resident portal.' },
   { key: 'phone', name: 'Phone', required: false, aliases: ['phone', 'phone number', 'cell', 'mobile', 'telephone'], example: '(850) 555-0123' },
-  { key: 'account_number', name: 'Account Number', required: 'Recommended', aliases: ['account', 'account number', 'account_number', 'account #', 'tenant id', 'tenant_id', 'acct'],
-    example: '33580', help: 'Rent Manager tenant account. Re-importing updates the tenant with the same account number instead of adding a duplicate.' },
+  { key: 'account_number', name: 'Account Number', required: true, aliases: ['account', 'account number', 'account_number', 'account #', 'tenant id', 'tenant_id', 'acct'],
+    example: '33580', help: 'Rent Manager tenant account, needed on every row and unique per tenant. Re-importing updates the tenant with the same account number instead of adding a duplicate.' },
   { key: 'mailing_address', name: 'Address', required: false, aliases: ['address', 'mailing address', 'mailing_address', 'street'],
     example: '810 Wadsworth St Apt #100B, Tallahassee, FL 32304', help: "Printed on statements. Leave blank to use the property's address and unit." },
   { key: 'move_in', name: 'Move In', required: true, aliases: ['move in', 'move-in', 'move_in', 'move in date', 'move-in date', 'movein'],
@@ -307,6 +318,105 @@ function mapImportRow(raw) {
 // ---- unit import
 const UNIT_ALIASES = aliasMap(UNIT_COLUMNS);
 
+// ---- import history (undo) and bulk delete
+
+// One CSV file may be sent in several chunks; the first chunk creates the import record and
+// later chunks pass its import_id so everything from one file belongs to one import.
+async function openImportBatch(db, kind, payload, adminId) {
+  if (payload.import_id) {
+    const b = await db.prepare('SELECT id FROM import_batches WHERE id = ? AND kind = ? AND undone_at IS NULL').bind(payload.import_id, kind).first();
+    if (!b) throw new HttpError(400, 'That import was not found or was already undone');
+    return { id: b.id, isNew: false };
+  }
+  const r = await db.prepare('INSERT INTO import_batches (kind, filename, created_by) VALUES (?, ?, ?) RETURNING id')
+    .bind(kind, coerce('text', payload.filename, 'File name'), adminId ?? null).first();
+  return { id: r.id, isNew: true };
+}
+
+async function runImportBatch(db, kind, payload, adminId, ops, counts) {
+  if (!ops.length) return null;
+  const batch = await openImportBatch(db, kind, payload, adminId);
+  try {
+    await db.batch([
+      ...ops.map((op) => op(batch.id)),
+      db.prepare(`UPDATE import_batches SET created_count = created_count + ?, updated_count = updated_count + ?,
+                  units_created = units_created + ? WHERE id = ?`)
+        .bind(counts.created, counts.updated, counts.units_created || 0, batch.id),
+    ]);
+  } catch (e) {
+    if (batch.isNew) await db.prepare('DELETE FROM import_batches WHERE id = ?').bind(batch.id).run();
+    throw e;
+  }
+  return batch.id;
+}
+
+const chunks = (arr, n = 90) => Array.from({ length: Math.ceil(arr.length / n) }, (_, i) => arr.slice(i * n, i * n + n));
+const inList = (ids) => ids.map(() => '?').join(',');
+
+function cleanIds(payload) {
+  const ids = [...new Set((Array.isArray(payload.ids) ? payload.ids : []).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+  if (!ids.length) throw new HttpError(400, 'Nothing selected');
+  if (ids.length > 5000) throw new HttpError(400, 'Delete at most 5000 at a time');
+  return ids;
+}
+
+/** Deletes tenants that have no billing statements; others are skipped with the reason. */
+async function deleteTenants(db, ids) {
+  const blocked = new Map();
+  for (const c of chunks(ids)) {
+    const rows = (await db.prepare(
+      `SELECT t.id, TRIM(COALESCE(t.first_name,'') || ' ' || t.last_name) AS name, COUNT(s.id) AS n
+       FROM tenants t JOIN statements s ON s.tenant_id = t.id WHERE t.id IN (${inList(c)}) GROUP BY t.id`,
+    ).bind(...c).all()).results;
+    for (const r of rows) blocked.set(r.id, { id: r.id, name: r.name, reason: `has ${r.n} billing statement${r.n === 1 ? '' : 's'} (set a move-out date instead)` });
+  }
+  const ok = ids.filter((id) => !blocked.has(id));
+  const stmts = [];
+  for (const c of chunks(ok)) {
+    stmts.push(db.prepare(`DELETE FROM sessions WHERE user_type = 'tenant' AND user_id IN (${inList(c)})`).bind(...c));
+    stmts.push(db.prepare(`DELETE FROM tenants WHERE id IN (${inList(c)})`).bind(...c));
+  }
+  if (stmts.length) await db.batch(stmts);
+  return { deleted: ok.length, skipped: [...blocked.values()] };
+}
+
+/** Deletes units that have no tenants (current or past); others are skipped with the reason. */
+async function deleteUnits(db, ids) {
+  const blocked = new Map();
+  for (const c of chunks(ids)) {
+    const rows = (await db.prepare(
+      `SELECT u.id, u.unit_number AS name, COUNT(t.id) AS n FROM units u JOIN tenants t ON t.unit_id = u.id
+       WHERE u.id IN (${inList(c)}) GROUP BY u.id`,
+    ).bind(...c).all()).results;
+    for (const r of rows) blocked.set(r.id, { id: r.id, name: `Unit ${r.name}`, reason: `has ${r.n} tenant${r.n === 1 ? '' : 's'} (delete those first)` });
+  }
+  const ok = ids.filter((id) => !blocked.has(id));
+  if (ok.length) await db.batch(chunks(ok).map((c) => db.prepare(`DELETE FROM units WHERE id IN (${inList(c)})`).bind(...c)));
+  return { deleted: ok.length, skipped: [...blocked.values()] };
+}
+
+async function listImports(db, kind) {
+  return (await db.prepare(
+    `SELECT b.*, a.email AS created_by_email,
+       (SELECT COUNT(*) FROM tenants t WHERE t.import_batch_id = b.id) AS tenants_remaining,
+       (SELECT COUNT(*) FROM units u WHERE u.import_batch_id = b.id) AS units_remaining
+     FROM import_batches b LEFT JOIN admins a ON a.id = b.created_by
+     WHERE b.kind = ? ORDER BY b.id DESC LIMIT 100`,
+  ).bind(kind).all()).results;
+}
+
+/** Undo an import: delete the tenants and units it created (records it only updated are not changed). */
+async function undoImport(db, id) {
+  const b = await db.prepare('SELECT * FROM import_batches WHERE id = ?').bind(id).first();
+  if (!b) throw new HttpError(404, 'Import not found');
+  const tenantIds = (await db.prepare('SELECT id FROM tenants WHERE import_batch_id = ?').bind(id).all()).results.map((r) => r.id);
+  const t = tenantIds.length ? await deleteTenants(db, tenantIds) : { deleted: 0, skipped: [] };
+  const unitIds = (await db.prepare('SELECT id FROM units WHERE import_batch_id = ?').bind(id).all()).results.map((r) => r.id);
+  const u = unitIds.length ? await deleteUnits(db, unitIds) : { deleted: 0, skipped: [] };
+  await db.prepare("UPDATE import_batches SET undone_at = datetime('now') WHERE id = ?").bind(id).run();
+  return { tenants_deleted: t.deleted, units_deleted: u.deleted, skipped: [...t.skipped, ...u.skipped] };
+}
+
 // Reads the number at the start of a cell: "1,050", "850 sq ft", "2 BR", "1.5".
 function leadingNumber(v, label) {
   if (blank(v)) return null;
@@ -317,24 +427,19 @@ function leadingNumber(v, label) {
 
 // Creates units, or updates sqft/bedrooms/bathrooms of existing ones (matched by
 // property + unit number, ignoring case). Blank cells keep the existing value.
-async function importUnits(db, payload) {
+async function importUnits(db, payload, adminId) {
   const rows = Array.isArray(payload.rows) ? payload.rows : [];
   if (!rows.length) throw new HttpError(400, 'No rows to import');
   if (rows.length > 1000) throw new HttpError(400, 'Import at most 1000 rows per request');
-  const defaultPropertyId = payload.property_id ? Number(payload.property_id) : null;
   const updateExisting = payload.update_existing !== false;
 
   const props = (await db.prepare('SELECT id, name, rm_property_code FROM properties').all()).results;
   const existing = (await db.prepare('SELECT id, property_id, unit_number, sqft, bedrooms, bathrooms, notes FROM units').all()).results;
   const key = (pid, num) => `${pid}|${String(num).trim().toLowerCase()}`;
   const byKey = new Map(existing.map((u) => [key(u.property_id, u.unit_number), u]));
-  const findProperty = (v) => {
-    const k = String(v).trim().toLowerCase();
-    return props.find((p) => String(p.id) === k || p.name.toLowerCase() === k || (p.rm_property_code || '').toLowerCase() === k);
-  };
 
   const errors = [];
-  const stmts = [];
+  const ops = []; // (importId) => statement
   const seen = new Map();
   const result = { created: 0, updated: 0, unchanged: 0, skipped_existing: 0 };
   rows.forEach((raw, idx) => {
@@ -346,8 +451,7 @@ async function importUnits(db, payload) {
       for (const [field, aliases] of Object.entries(UNIT_ALIASES)) {
         for (const a of aliases) if (!blank(lower[a])) { r[field] = String(lower[a]).trim(); break; }
       }
-      const prop = r.property ? findProperty(r.property) : props.find((p) => p.id === defaultPropertyId);
-      if (!prop) throw new Error(r.property ? `property "${r.property}" not found` : 'no property given (add a Property column or pick a property)');
+      const prop = propertyByCode(props, r.property);
       if (!r.unit_number) throw new Error('unit number is missing');
       if (r.unit_number.length > 50) throw new Error('unit number is too long');
       const k = key(prop.id, r.unit_number);
@@ -360,8 +464,8 @@ async function importUnits(db, payload) {
 
       const u = byKey.get(k);
       if (!u) {
-        stmts.push(db.prepare('INSERT INTO units (property_id, unit_number, sqft, bedrooms, bathrooms, notes) VALUES (?, ?, ?, ?, ?, ?)')
-          .bind(prop.id, r.unit_number, sqft ?? 0, bedrooms ?? 0, bathrooms ?? 0, notes));
+        ops.push((importId) => db.prepare('INSERT INTO units (property_id, unit_number, sqft, bedrooms, bathrooms, notes, import_batch_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          .bind(prop.id, r.unit_number, sqft ?? 0, bedrooms ?? 0, bathrooms ?? 0, notes, importId));
         result.created++;
       } else if (!updateExisting) {
         result.skipped_existing++;
@@ -370,7 +474,7 @@ async function importUnits(db, payload) {
         if (next.sqft === u.sqft && next.bedrooms === u.bedrooms && next.bathrooms === u.bathrooms && next.notes === u.notes) {
           result.unchanged++;
         } else {
-          stmts.push(db.prepare('UPDATE units SET sqft = ?, bedrooms = ?, bathrooms = ?, notes = ? WHERE id = ?')
+          ops.push(() => db.prepare('UPDATE units SET sqft = ?, bedrooms = ?, bathrooms = ?, notes = ? WHERE id = ?')
             .bind(next.sqft, next.bedrooms, next.bathrooms, next.notes, u.id));
           result.updated++;
         }
@@ -381,40 +485,40 @@ async function importUnits(db, payload) {
   });
 
   if (errors.length && !payload.skip_errors) return { created: 0, updated: 0, unchanged: 0, skipped_existing: 0, errors };
-  if (stmts.length) await db.batch(stmts);
-  return { ...result, errors };
+  const importId = await runImportBatch(db, 'units', payload, adminId, ops, { created: result.created, updated: result.updated });
+  return { ...result, errors, import_id: importId ?? payload.import_id ?? null };
 }
 
 // Rows are imported in a single D1 batch to stay within per-request query limits.
 // Existing tenants (matched by account number) are updated; others are inserted.
-async function importTenants(db, payload) {
+async function importTenants(db, payload, adminId) {
   const rows = Array.isArray(payload.rows) ? payload.rows : [];
   if (!rows.length) throw new HttpError(400, 'No rows to import');
   if (rows.length > 500) throw new HttpError(400, 'Import at most 500 rows per request');
-  const defaultPropertyId = payload.property_id ? Number(payload.property_id) : null;
   const createUnits = payload.create_units !== false;
 
   const props = (await db.prepare('SELECT id, name, rm_property_code FROM properties').all()).results;
   const units = (await db.prepare('SELECT id, property_id, unit_number FROM units').all()).results;
+  const accounts = new Set((await db.prepare('SELECT account_number FROM tenants WHERE account_number IS NOT NULL').all()).results.map((r) => r.account_number));
   const unitKey = (pid, num) => `${pid}|${String(num).trim().toLowerCase()}`;
   const unitSet = new Set(units.map((u) => unitKey(u.property_id, u.unit_number)));
-  const findProperty = (s) => {
-    const k = String(s).trim().toLowerCase();
-    return props.find((p) => String(p.id) === k || p.name.toLowerCase() === k || (p.rm_property_code || '').toLowerCase() === k);
-  };
 
   const errors = [];
-  const stmts = [];
+  const ops = []; // (importId) => statement
   const newUnits = new Set();
-  let count = 0;
+  const seenAccounts = new Map();
+  let count = 0, created = 0, updated = 0;
   rows.forEach((raw, idx) => {
     const line = idx + 2; // header is line 1
     try {
       const r = mapImportRow(raw);
-      const prop = r.property ? findProperty(r.property) : props.find((p) => p.id === defaultPropertyId);
-      if (!prop) throw new Error(r.property ? `property "${r.property}" not found` : 'no property given (add a Property column or pick a property)');
+      const prop = propertyByCode(props, r.property);
       if (!r.unit_number) throw new Error('unit number is missing');
       if (!r.last_name) throw new Error('tenant name is missing');
+      if (blank(r.account_number)) throw new Error('account number is missing');
+      const acctKey = r.account_number.trim();
+      if (seenAccounts.has(acctKey)) throw new Error(`account number ${acctKey} is listed twice (also on line ${seenAccounts.get(acctKey)})`);
+      seenAccounts.set(acctKey, line);
       const moveIn = coerce('date', r.move_in, 'Move-in');
       if (!moveIn) throw new Error('move-in date is missing');
       const moveOut = coerce('date', r.move_out, 'Move-out');
@@ -427,36 +531,40 @@ async function importTenants(db, payload) {
         if (!createUnits) throw new Error(`unit ${r.unit_number} does not exist at ${prop.name}`);
         if (!newUnits.has(key)) {
           newUnits.add(key);
-          stmts.push(db.prepare('INSERT OR IGNORE INTO units (property_id, unit_number, sqft, bedrooms) VALUES (?, ?, ?, ?)')
-            .bind(prop.id, r.unit_number, coerce('num', r.sqft, 'Sq ft') ?? 0, coerce('num', r.bedrooms, 'Bedrooms') ?? 0));
+          const sq = coerce('num', r.sqft, 'Sq ft') ?? 0, br = coerce('num', r.bedrooms, 'Bedrooms') ?? 0;
+          ops.push((importId) => db.prepare('INSERT OR IGNORE INTO units (property_id, unit_number, sqft, bedrooms, import_batch_id) VALUES (?, ?, ?, ?, ?)')
+            .bind(prop.id, r.unit_number, sq, br, importId));
         }
       } else if (!blank(r.sqft) || !blank(r.bedrooms)) {
         // Fill in unit size when the import provides it.
-        stmts.push(db.prepare(
+        const sq = coerce('num', r.sqft, 'Sq ft'), br = coerce('num', r.bedrooms, 'Bedrooms');
+        ops.push(() => db.prepare(
           `UPDATE units SET sqft = COALESCE(?, sqft), bedrooms = COALESCE(?, bedrooms)
            WHERE property_id = ? AND unit_number = ? COLLATE NOCASE`,
-        ).bind(coerce('num', r.sqft, 'Sq ft'), coerce('num', r.bedrooms, 'Bedrooms'), prop.id, r.unit_number));
+        ).bind(sq, br, prop.id, r.unit_number));
       }
-      const acct = blank(r.account_number) ? null : r.account_number;
-      stmts.push(db.prepare(
-        `INSERT INTO tenants (unit_id, first_name, last_name, email, phone, account_number, mailing_address, move_in, move_out, occupants)
-         VALUES ((SELECT id FROM units WHERE property_id = ? AND unit_number = ? COLLATE NOCASE), ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      const acct = acctKey;
+      if (accounts.has(acct)) updated++; else created++;
+      // import_batch_id is only set on INSERT, so updating an existing tenant doesn't make it undoable.
+      ops.push((importId) => db.prepare(
+        `INSERT INTO tenants (unit_id, first_name, last_name, email, phone, account_number, mailing_address, move_in, move_out, occupants, import_batch_id)
+         VALUES ((SELECT id FROM units WHERE property_id = ? AND unit_number = ? COLLATE NOCASE), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(account_number) DO UPDATE SET
            unit_id = excluded.unit_id, first_name = excluded.first_name, last_name = excluded.last_name,
            email = COALESCE(excluded.email, email), phone = COALESCE(excluded.phone, phone),
            mailing_address = COALESCE(excluded.mailing_address, mailing_address),
            move_in = excluded.move_in, move_out = excluded.move_out, occupants = excluded.occupants`,
       ).bind(prop.id, r.unit_number, r.first_name || null, r.last_name, email, r.phone || null, acct,
-        r.mailing_address || null, moveIn, moveOut, occupants));
+        r.mailing_address || null, moveIn, moveOut, occupants, importId));
       count++;
     } catch (e) {
       errors.push({ line, error: e.message });
     }
   });
 
-  if (errors.length && !payload.skip_errors) return { imported: 0, errors, units_created: 0 };
-  if (stmts.length) await db.batch(stmts);
-  return { imported: count, units_created: newUnits.size, errors };
+  if (errors.length && !payload.skip_errors) return { imported: 0, created: 0, updated: 0, errors, units_created: 0 };
+  const importId = await runImportBatch(db, 'tenants', payload, adminId, ops, { created, updated, units_created: newUnits.size });
+  return { imported: count, created, updated, units_created: newUnits.size, errors, import_id: importId ?? payload.import_id ?? null };
 }
 
 // ---------------------------------------------------------------- exports
@@ -697,8 +805,18 @@ async function handle({ request, env }) {
     throw new HttpError(404, 'Unknown export');
   }
 
-  if (name === 'tenants' && id === 'import' && method === 'POST') return json(await importTenants(db, await body(request)));
-  if (name === 'units' && id === 'import' && method === 'POST') return json(await importUnits(db, await body(request)));
+  if (name === 'tenants' && id === 'import' && method === 'POST') return json(await importTenants(db, await body(request), session.user_id));
+  if (name === 'units' && id === 'import' && method === 'POST') return json(await importUnits(db, await body(request), session.user_id));
+  if (name === 'tenants' && id === 'bulk-delete' && method === 'POST') return json(await deleteTenants(db, cleanIds(await body(request))));
+  if (name === 'units' && id === 'bulk-delete' && method === 'POST') return json(await deleteUnits(db, cleanIds(await body(request))));
+  if (name === 'imports') {
+    if (method === 'GET' && !id) {
+      const kind = url.searchParams.get('kind');
+      if (!['tenants', 'units'].includes(kind)) throw new HttpError(400, 'kind must be tenants or units');
+      return json(await listImports(db, kind));
+    }
+    if (method === 'POST' && id && action === 'undo') return json(await undoImport(db, id));
+  }
   if (name === 'import-columns' && method === 'GET') return json({ tenants: TENANT_COLUMNS, units: UNIT_COLUMNS });
   if (name === 'tenants' && id && action === 'reset-portal' && method === 'POST') {
     await db.batch([

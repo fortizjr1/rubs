@@ -151,3 +151,7 @@ table.col-guide code { white-space: nowrap; font-size: .8rem; }
 .col-check { margin-bottom: 1rem; padding: .8rem 1rem; }
 .col-check ul { list-style: none; padding: 0; margin: .5rem 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .2rem .8rem; font-size: .85rem; }
 .ok { color: var(--ok); }
+th.sel, td.sel { width: 2rem; padding-right: 0; }
+tr.selected td { background: #eff4ff; }
+.selbar { display: flex; align-items: center; gap: .75rem; background: #eff4ff; border: 1px solid #c7d7fe; border-radius: 8px; padding: .5rem .8rem; margin-bottom: .75rem; }
+.selbar[hidden] { display: none; }

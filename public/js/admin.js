@@ -1,6 +1,6 @@
 // Admin app: dashboard, properties, units, tenants, utilities, billing, exports, settings.
 import {
-  api, esc, money, date, fullName, toast, modal, closeModal, confirmBox, formModal, table, parseCSV, onActions,
+  api, esc, money, date, fullName, toast, modal, closeModal, confirmBox, formModal, table, parseCSV, onActions, bindSelection,
 } from './ui.js';
 import { runsTable, runsView, runForm, runDetailPage, emailSettingsView } from './billing.js';
 import { DEFAULT_TEXT } from './shared/statement-pdf.js';
@@ -271,8 +271,11 @@ async function unitsView(el, { propertyId }) {
   div.innerHTML = `<div class="topbar"><div class="muted">${units.length} units · ${totalSqft.toLocaleString()} total sq ft</div>
       <div class="row"><a class="btn" href="/api/admin/export/units.csv?property_id=${propertyId || ''}">Export CSV</a>
       <button data-action="import">Import CSV</button>
+      <button data-action="history">Import history</button>
       <button class="primary" data-action="add">+ Add unit</button></div></div>
+    <div class="selbar" data-selbar hidden></div>
     ${table({
+      select: true,
       columns: [
         { label: 'Unit', value: 'unit_number' },
         { label: 'Sq ft', value: (u) => Number(u.sqft).toLocaleString(), cls: 'num' },
@@ -288,8 +291,15 @@ async function unitsView(el, { propertyId }) {
   el.replaceChildren(div);
   // Reload the whole property page so the Total / Occupied / Vacant boxes update too.
   const reload = () => (propertyId ? window.dispatchEvent(new HashChangeEvent('hashchange')) : unitsView(el, { propertyId }));
+  const sel = bindSelection(div, div.querySelector('[data-selbar]'), selectionBar('unit', (ids) => bulkDeleteModal({
+    noun: 'unit', ids, endpoint: '/admin/units/bulk-delete', after: reload,
+    names: ids.map((i) => `Unit ${units.find((u) => u.id === i)?.unit_number}`),
+    note: 'Units that have tenants (current or past) are skipped. Delete or move those tenants first.',
+  })));
+  div.querySelector('[data-selbar]').addEventListener('click', (e) => { if (e.target.matches('[data-bulk-clear]')) sel.clear(); });
   onActions(div, {
     import: () => unitImportModal(propertyId, reload),
+    history: () => importHistoryModal('units', reload),
     add: () => formModal({ title: 'Add unit', fields, values: { property_id: propertyId },
       onSubmit: async (d) => { await api('/admin/units', { method: 'POST', body: d }); toast('Unit added'); reload(); } }),
     edit: ({ id }) => formModal({ title: 'Edit unit', fields, values: units.find((u) => u.id == id),
@@ -380,8 +390,11 @@ async function tenantsView(el, { propertyId, filters = {} }) {
         <button type="submit">Search</button></form>
       <div class="row"><a class="btn" href="/api/admin/export/tenants.csv?${qs}">Export CSV</a>
         <button data-action="import">Import CSV</button>
+        <button data-action="history">Import history</button>
         <button class="primary" data-action="add">+ Add tenant</button></div></div>
+    <div class="selbar" data-selbar hidden></div>
     ${table({
+      select: true,
       columns: [
         { label: 'Name', value: (t) => esc(fullName(t)) },
         { label: propertyId ? 'Unit' : 'Property / unit', value: (t) => esc(propertyId ? t.unit_number : `${t.property_name} — ${t.unit_number}`) },
@@ -407,7 +420,14 @@ async function tenantsView(el, { propertyId, filters = {} }) {
     reload(Object.fromEntries(new FormData(e.target)));
   });
   div.querySelectorAll('[data-filters] select').forEach((s) => s.addEventListener('change', () => s.form.requestSubmit()));
+  const sel = bindSelection(div, div.querySelector('[data-selbar]'), selectionBar('tenant', (ids) => bulkDeleteModal({
+    noun: 'tenant', ids, endpoint: '/admin/tenants/bulk-delete', after: () => reload(),
+    names: ids.map((i) => fullName(tenants.find((t) => t.id === i) || {})),
+    note: 'Tenants who already have billing statements are skipped. For those, set a move-out date instead. Their units are not deleted.',
+  })));
+  div.querySelector('[data-selbar]').addEventListener('click', (e) => { if (e.target.matches('[data-bulk-clear]')) sel.clear(); });
   onActions(div, {
+    history: () => importHistoryModal('tenants', () => reload()),
     add: () => tenantForm({ title: 'Add tenant', propertyId,
       onSave: async (d) => { await api('/admin/tenants', { method: 'POST', body: d }); toast('Tenant added'); reload(); } }),
     edit: ({ id }) => tenantForm({ title: 'Edit tenant', propertyId, values: tenants.find((x) => x.id == id),
@@ -445,7 +465,7 @@ function columnGuide(cols) {
 }
 
 /** Matches the file's headers to known columns the same way the server does (case-insensitive). */
-function checkColumns(headers, cols, kind, hasPropertyPicked) {
+function checkColumns(headers, cols, kind) {
   const found = {};
   const mapped = headers.map((h) => {
     const c = cols.find((col) => col.aliases.includes(h.trim().toLowerCase()));
@@ -453,9 +473,10 @@ function checkColumns(headers, cols, kind, hasPropertyPicked) {
     return { header: h, col: c, duplicate: c && found[c.key] !== h };
   });
   const missing = [];
+  if (!found.property) missing.push('Property (short name)');
   if (!found.unit_number) missing.push('Unit');
-  if (!found.property && !hasPropertyPicked) missing.push('Property (or pick a property above)');
   if (kind === 'tenants') {
+    if (!found.account_number) missing.push('Account Number');
     if (!found.last_name && !found.full_name) missing.push('Last Name (or Name)');
     if (!found.move_in) missing.push('Move In');
   }
@@ -470,17 +491,19 @@ function checkColumns(headers, cols, kind, hasPropertyPicked) {
 async function csvImportModal(propertyId, after, opts) {
   const [props, columns] = await Promise.all([getActiveProperties(propertyId), getImportColumns()]);
   const cols = columns[opts.kind];
+  const noCode = props.filter((p) => !p.rm_property_code);
   const m = modal(`<h2>${esc(opts.title)}</h2>
     <p class="small">${opts.intro} <a href="${opts.template}" download>Download a template</a> with the column headers.</p>
     <details class="hint" open><summary>Which columns do I need?</summary>
       <p class="small muted">Column names are not case-sensitive and can be in any order. Columns not listed here are ignored.</p>
       ${columnGuide(cols)}</details>
+    <div class="notice small"><b>Property short names</b> to use in the Property column:
+      ${props.filter((p) => p.rm_property_code).map((p) => `<code>${esc(p.rm_property_code)}</code> = ${esc(propertyLabel(p))}`).join(' · ') || 'none yet'}
+      ${noCode.length ? `<div class="warn">No short name set for: ${noCode.map((p) => esc(p.name)).join(', ')}. Add one in Edit property (Rent Manager property code) before importing for them.</div>` : ''}</div>
     <div class="error" hidden></div>
     <div class="form-grid">
       <div class="field full"><label>CSV file</label><input type="file" accept=".csv,text/csv" data-file></div>
-      <div class="field"><label>Property (for rows without a Property column)</label>
-        <select data-prop><option value="">—</option>${props.map((p) => `<option value="${p.id}" ${p.id == propertyId ? 'selected' : ''}>${esc(propertyLabel(p))}</option>`).join('')}</select></div>
-      <div class="field">${opts.options.map((o) => `<label><input type="checkbox" data-opt="${o.key}" ${o.checked ? 'checked' : ''}> ${esc(o.label)}</label>`).join('')}
+      <div class="field full">${opts.options.map((o) => `<label><input type="checkbox" data-opt="${o.key}" ${o.checked ? 'checked' : ''}> ${esc(o.label)}</label>`).join('')}
         <label><input type="checkbox" data-skip> Skip rows with errors and import the rest</label></div>
     </div>
     <div data-check></div>
@@ -488,13 +511,13 @@ async function csvImportModal(propertyId, after, opts) {
     <div class="footer"><button data-close>Cancel</button><button class="primary" data-go disabled>Import</button></div>`, { wide: true });
   let rows = [];
   let headers = [];
+  let filename = '';
   const err = m.querySelector('.error');
   const go = m.querySelector('[data-go]');
-  const propSel = m.querySelector('[data-prop]');
 
   const renderCheck = () => {
     if (!rows.length) return;
-    const { mapped, missing } = checkColumns(headers, cols, opts.kind, Boolean(propSel.value));
+    const { mapped, missing } = checkColumns(headers, cols, opts.kind);
     m.querySelector('[data-check]').innerHTML = `<div class="card col-check"><h3 class="m0">Column check</h3>
       <ul>${mapped.map((x) => x.col
         ? `<li class="ok">✓ <b>${esc(x.header)}</b> → ${esc(x.col.name)}${x.duplicate ? ' <span class="warn">(another column already matches this, so this one is ignored)</span>' : ''}</li>`
@@ -503,12 +526,12 @@ async function csvImportModal(propertyId, after, opts) {
         Add the column, or rename a header in your file to one of the names in the guide above.</div>` : '<div class="ok">All required columns found.</div>'}</div>`;
     go.disabled = missing.length > 0;
   };
-  propSel.addEventListener('change', renderCheck);
 
   m.querySelector('[data-file]').addEventListener('change', async (e) => {
     err.hidden = true;
     const file = e.target.files[0];
     if (!file) return;
+    filename = file.name;
     rows = parseCSV(await file.text());
     headers = rows.length ? Object.keys(rows[0]) : [];
     m.querySelector('[data-preview]').innerHTML = rows.length
@@ -524,13 +547,15 @@ async function csvImportModal(propertyId, after, opts) {
     err.hidden = true;
     const total = { errors: [] };
     const options = Object.fromEntries([...m.querySelectorAll('[data-opt]')].map((c) => [c.dataset.opt, c.checked]));
+    let importId = null; // every chunk of this file belongs to one import (so it can be undone at once)
     try {
       for (let i = 0; i < rows.length; i += opts.chunk) {
         const r = await api(opts.endpoint, { method: 'POST', body: {
-          rows: rows.slice(i, i + opts.chunk), property_id: propSel.value || null,
-          skip_errors: m.querySelector('[data-skip]').checked, ...options,
+          rows: rows.slice(i, i + opts.chunk),
+          skip_errors: m.querySelector('[data-skip]').checked, filename, import_id: importId, ...options,
         } });
-        for (const [k, v] of Object.entries(r)) if (typeof v === 'number') total[k] = (total[k] || 0) + v;
+        importId = r.import_id ?? importId;
+        for (const [k, v] of Object.entries(r)) if (typeof v === 'number' && k !== 'import_id') total[k] = (total[k] || 0) + v;
         total.errors.push(...r.errors.map((x) => ({ ...x, line: x.line + i })));
       }
     } catch (e2) { err.textContent = e2.message; err.hidden = false; go.disabled = false; return; }
@@ -540,16 +565,106 @@ async function csvImportModal(propertyId, after, opts) {
       err.hidden = false; go.disabled = false; return;
     }
     closeModal();
-    toast(opts.summary(total) + (total.errors.length ? `, skipped ${total.errors.length} rows with errors` : ''));
+    toast(opts.summary(total) + (total.errors.length ? `, skipped ${total.errors.length} rows with errors` : '')
+      + (importId ? '. To reverse it, use Import history → Undo.' : ''));
     after();
   });
+}
+
+// --------------------------------------------------------------- bulk delete + import history
+
+/**
+ * Confirm and delete many tenants or units at once. Records the server refuses
+ * (tenants with billing statements, units with tenants) are listed with the reason.
+ */
+function bulkDeleteModal({ noun, ids, names, endpoint, note, after }) {
+  const n = ids.length;
+  const strict = n > 10;
+  const m = modal(`<h2>Delete ${n} ${noun}${n === 1 ? '' : 's'}?</h2>
+    <p class="small">${names.slice(0, 12).map(esc).join(', ')}${n > 12 ? `, and ${n - 12} more` : ''}</p>
+    <div class="notice small">${note}</div>
+    ${strict ? `<div class="field"><label for="bulk_confirm">Type <b>DELETE</b> to confirm</label><input id="bulk_confirm" autocomplete="off" data-confirm></div>` : ''}
+    <div class="error" hidden></div>
+    <div class="footer"><button data-close>Cancel</button>
+      <button class="primary danger-fill" data-go ${strict ? 'disabled' : ''}>Delete ${n} ${noun}${n === 1 ? '' : 's'}</button></div>`);
+  const go = m.querySelector('[data-go]');
+  const input = m.querySelector('[data-confirm]');
+  input?.addEventListener('input', () => { go.disabled = input.value.trim() !== 'DELETE'; });
+  input?.focus();
+  go.addEventListener('click', async () => {
+    go.disabled = true;
+    try {
+      const r = await api(endpoint, { method: 'POST', body: { ids } });
+      closeModal();
+      after();
+      if (r.skipped.length) skippedModal(`Deleted ${r.deleted} ${noun}${r.deleted === 1 ? '' : 's'}`, r.skipped);
+      else toast(`Deleted ${r.deleted} ${noun}${r.deleted === 1 ? '' : 's'}`);
+    } catch (e) {
+      const err = m.querySelector('.error');
+      err.textContent = e.message; err.hidden = false; go.disabled = false;
+    }
+  });
+}
+
+function skippedModal(title, skipped) {
+  modal(`<h2>${esc(title)}</h2>
+    <p>${skipped.length} could not be deleted, so they were kept:</p>
+    <div class="log small">${skipped.map((x) => `<div><b>${esc(x.name)}</b>: ${esc(x.reason)}</div>`).join('')}</div>
+    <div class="footer"><button class="primary" data-close>OK</button></div>`);
+}
+
+/** Selection bar shown above a list while rows are checked. */
+function selectionBar(noun, onDelete) {
+  return (bar, ids) => {
+    bar.innerHTML = `<b>${ids.length}</b> ${noun}${ids.length === 1 ? '' : 's'} selected
+      <button class="danger" data-bulk-delete>Delete selected</button><button class="link" data-bulk-clear>Clear selection</button>`;
+    bar.querySelector('[data-bulk-delete]').onclick = () => onDelete(ids);
+  };
+}
+
+async function importHistoryModal(kind, after) {
+  const imports = await api(`/admin/imports?kind=${kind}`);
+  const noun = kind === 'tenants' ? 'tenant' : 'unit';
+  const m = modal(`<h2>${kind === 'tenants' ? 'Tenant' : 'Unit'} import history</h2>
+    <p class="small muted">Undo deletes the ${noun}s${kind === 'tenants' ? ' (and any new units)' : ''} that an import <b>created</b>.
+      Changes an import made to records that already existed are not reversed.
+      ${kind === 'tenants' ? 'Tenants who already have billing statements are kept.' : 'Units that have tenants are kept.'}</p>
+    ${table({
+      columns: [
+        { label: 'Imported', value: (b) => `${date(b.created_at)} <span class="muted small">${esc(b.created_at.slice(11, 16))} UTC</span>` },
+        { label: 'File', value: (b) => `${esc(b.filename || '—')}<div class="muted small">${esc(b.created_by_email || '')}</div>` },
+        { label: 'Created', value: (b) => `${b.created_count}${kind === 'tenants' && b.units_created ? `<div class="muted small">+${b.units_created} units</div>` : ''}`, cls: 'num' },
+        { label: 'Updated', value: 'updated_count', cls: 'num' },
+        { label: 'Still in system', value: (b) => `${kind === 'tenants' ? `${b.tenants_remaining} tenants` : ''}${kind === 'tenants' && b.units_remaining ? ', ' : ''}${b.units_remaining || kind === 'units' ? `${b.units_remaining} units` : ''}` },
+        { label: 'Status', value: (b) => (b.undone_at ? `<span class="badge">undone ${date(b.undone_at)}</span>` : '<span class="badge posted">imported</span>') },
+      ],
+      rows: imports,
+      actions: (b) => (b.tenants_remaining || b.units_remaining
+        ? `<button class="link danger" data-undo="${b.id}">${b.undone_at ? 'Undo again' : 'Undo'}</button>` : ''),
+      empty: 'No imports recorded yet. (Imports made before this feature was added are not listed. Use the checkboxes and Delete selected instead.)',
+    })}
+    <div class="footer"><button class="primary" data-close>Close</button></div>`, { wide: true });
+  m.querySelectorAll('[data-undo]').forEach((btn) => btn.addEventListener('click', async () => {
+    const b = imports.find((x) => x.id == btn.dataset.undo);
+    const what = [b.tenants_remaining ? `${b.tenants_remaining} tenant${b.tenants_remaining === 1 ? '' : 's'}` : '',
+      b.units_remaining ? `${b.units_remaining} unit${b.units_remaining === 1 ? '' : 's'}` : ''].filter(Boolean).join(' and ');
+    if (!(await confirmBox(`Undo the import of "${b.filename || 'file'}"? This deletes the ${what} it created.`, 'Undo import'))) {
+      importHistoryModal(kind, after); return;
+    }
+    try {
+      const r = await api(`/admin/imports/${b.id}/undo`, { method: 'POST' });
+      const msg = `Import undone: deleted ${r.tenants_deleted} tenants and ${r.units_deleted} units`;
+      after();
+      if (r.skipped.length) skippedModal(msg, r.skipped); else toast(msg);
+    } catch (e) { toast(e.message, true); }
+  }));
 }
 
 function importModal(propertyId, after) {
   return csvImportModal(propertyId, after, {
     kind: 'tenants',
     title: 'Import tenants from CSV',
-    intro: 'One row per tenant. Each tenant needs at least a <b>Unit</b>, a <b>name</b> and a <b>Move In</b> date. Dates can be MM/DD/YYYY or YYYY-MM-DD.',
+    intro: 'One row per tenant. Every row needs the <b>Property</b> short name, <b>Unit</b>, <b>Account Number</b>, a <b>name</b> and a <b>Move In</b> date. Dates can be MM/DD/YYYY or YYYY-MM-DD.',
     template: '/tenant-import-template.csv',
     endpoint: '/admin/tenants/import',
     chunk: 500,
@@ -562,7 +677,7 @@ function unitImportModal(propertyId, after) {
   return csvImportModal(propertyId, after, {
     kind: 'units',
     title: 'Import units from CSV',
-    intro: 'One row per unit, including vacant units so the split rules can count them. Only <b>Unit</b> is required.',
+    intro: 'One row per unit, including vacant units so the split rules can count them. Every row needs the <b>Property</b> short name and the <b>Unit</b>.',
     template: '/unit-import-template.csv',
     endpoint: '/admin/units/import',
     chunk: 1000,

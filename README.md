@@ -6,8 +6,8 @@ It runs entirely on free tiers: **GitHub** (code) + **Cloudflare Pages** (hostin
 ## Features
 
 - **Properties, units, tenants and utility split rules**: add, edit, delete. Tenants have name, email, phone, address, unit, account number, move-in and move-out dates, and number of occupants.
-- **CSV unit import**: one row per unit (Unit, Sq Ft, Bedrooms, Bathrooms, Notes, and optionally Property). Unit numbers are matched ignoring case, so existing units are updated instead of duplicated.
-- **CSV tenant import** with flexible column names and MM/DD/YYYY or YYYY-MM-DD dates. Missing units are created automatically. Re-importing updates tenants by account number instead of duplicating them.
+- **CSV unit import**: one row per unit (Property short name, Unit, Sq Ft, Bedrooms, Bathrooms, Notes). Unit numbers are matched ignoring case, so existing units are updated instead of duplicated.
+- **CSV tenant import** (Property short name, Unit, Account Number, name and Move In required on every row) with flexible column names and MM/DD/YYYY or YYYY-MM-DD dates. Missing units are created automatically. Re-importing updates tenants by account number instead of duplicating them.
 - **Per-property utility split rules ("set asides")**:
   - **Recovery %**: the share passed to residents. The rest is common area paid by the owner.
   - **Weighted split**: any mix of square footage, bedrooms, occupants and equal-per-unit.
@@ -92,6 +92,11 @@ In Cloudflare go to **Security → WAF → Rate limiting rules** (the free plan 
 3. Click **Email statements**. For residents without an email, use **Download all PDFs** and print theirs.
 4. Click **Export CSV for Rent Manager** and import the file into Rent Manager.
 5. Moves: set the move-out date or add the new tenant before calculating. Proration is automatic.
+
+**Fixing an import**
+- Every import requires the **Property** column with the property's short name (its Rent Manager code). Tenant imports also need an **Account Number** on every row.
+- **Import history → Undo** (Tenants page or a property's Units tab) deletes the tenants and units an import created. Changes it made to existing records are not reversed.
+- To remove many records at once, tick the checkboxes (or the header box to select all) and click **Delete selected**. Tenants with billing statements and units that have tenants are kept, and the reason is shown.
 
 **Selling a property**
 - Open the property and click **Mark inactive**, then enter the date and a reason such as "Sold".

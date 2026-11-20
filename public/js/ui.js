@@ -123,15 +123,50 @@ export function formModal({ title, fields, values = {}, submitLabel = 'Save', on
   return m;
 }
 
-/** columns: [{label, value: (row) => html | 'key', cls}] — cell values from keys are escaped. */
-export function table({ columns, rows, actions, empty = 'Nothing here yet.', footer }) {
+/**
+ * columns: [{label, value: (row) => html | 'key', cls}] — cell values from keys are escaped.
+ * select: true adds a checkbox column (rows need an id); use bindSelection() to handle it.
+ */
+export function table({ columns, rows, actions, empty = 'Nothing here yet.', footer, select = false }) {
   if (!rows.length) return `<div class="table-wrap"><div class="empty">${empty}</div></div>`;
   return `<div class="table-wrap"><table>
-    <thead><tr>${columns.map((c) => `<th class="${c.cls || ''}">${esc(c.label)}</th>`).join('')}${actions ? '<th></th>' : ''}</tr></thead>
-    <tbody>${rows.map((r) => `<tr>${columns.map((c) => `<td class="${c.cls || ''}">${typeof c.value === 'function' ? c.value(r) : esc(r[c.value])}</td>`).join('')}
+    <thead><tr>${select ? '<th class="sel"><input type="checkbox" data-select-all aria-label="Select all"></th>' : ''}${columns.map((c) => `<th class="${c.cls || ''}">${esc(c.label)}</th>`).join('')}${actions ? '<th></th>' : ''}</tr></thead>
+    <tbody>${rows.map((r) => `<tr>${select ? `<td class="sel"><input type="checkbox" data-select value="${esc(r.id)}" aria-label="Select"></td>` : ''}${columns.map((c) => `<td class="${c.cls || ''}">${typeof c.value === 'function' ? c.value(r) : esc(r[c.value])}</td>`).join('')}
       ${actions ? `<td class="actions">${actions(r)}</td>` : ''}</tr>`).join('')}</tbody>
     ${footer ? `<tfoot>${footer}</tfoot>` : ''}
   </table></div>`;
+}
+
+/**
+ * Checkbox selection for a table rendered with select: true. Shows `bar` when something is
+ * selected and calls render(bar, ids) to fill it. Returns {ids(), clear()}.
+ */
+export function bindSelection(root, bar, render) {
+  const selected = new Set();
+  const boxes = () => [...root.querySelectorAll('[data-select]')];
+  const all = root.querySelector('[data-select-all]');
+  const update = () => {
+    boxes().forEach((b) => { b.checked = selected.has(Number(b.value)); b.closest('tr').classList.toggle('selected', b.checked); });
+    if (all) {
+      all.checked = selected.size > 0 && selected.size === boxes().length;
+      all.indeterminate = selected.size > 0 && selected.size < boxes().length;
+    }
+    bar.hidden = selected.size === 0;
+    if (selected.size) render(bar, [...selected]);
+  };
+  root.addEventListener('change', (e) => {
+    if (e.target.matches('[data-select]')) {
+      const id = Number(e.target.value);
+      if (e.target.checked) selected.add(id); else selected.delete(id);
+      update();
+    } else if (e.target.matches('[data-select-all]')) {
+      boxes().forEach((b) => (e.target.checked ? selected.add(Number(b.value)) : selected.delete(Number(b.value))));
+      update();
+    }
+  });
+  const api = { ids: () => [...selected], clear: () => { selected.clear(); update(); } };
+  update();
+  return api;
 }
 
 /** Minimal RFC 4180 CSV parser -> array of objects keyed by header. */

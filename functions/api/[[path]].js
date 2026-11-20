@@ -234,22 +234,58 @@ async function deleteResource(db, name, id) {
 
 // ---------------------------------------------------------------- tenant import
 
-const IMPORT_ALIASES = {
-  property: ['property', 'property name', 'property_name', 'property code', 'property_code', 'rm_property_code'],
-  unit_number: ['unit', 'unit number', 'unit_number', 'unit #', 'unit no', 'apt'],
-  first_name: ['first name', 'first_name', 'firstname', 'first'],
-  last_name: ['last name', 'last_name', 'lastname', 'last'],
-  full_name: ['name', 'tenant name', 'tenant', 'full name', 'resident', 'resident name'],
-  email: ['email', 'email address', 'e-mail'],
-  phone: ['phone', 'phone number', 'cell', 'mobile', 'telephone'],
-  account_number: ['account', 'account number', 'account_number', 'account #', 'tenant id', 'tenant_id', 'acct'],
-  mailing_address: ['address', 'mailing address', 'mailing_address', 'street'],
-  move_in: ['move in', 'move-in', 'move_in', 'move in date', 'move-in date', 'movein'],
-  move_out: ['move out', 'move-out', 'move_out', 'move out date', 'move-out date', 'moveout'],
-  occupants: ['occupants', 'people', 'number of occupants', 'household size', '# occupants'],
-  sqft: ['sqft', 'sq ft', 'square feet', 'square footage', 'sf'],
-  bedrooms: ['bedrooms', 'beds', 'br', 'bedroom'],
+// Import column definitions. Used both to read CSV files and to show the column guide in the
+// import window (GET /api/admin/import-columns), so the two never disagree.
+// required: true = must be in the file; a string = required in that situation.
+const PROPERTY_COLUMN = {
+  key: 'property', name: 'Property', required: 'Only if the file covers more than one property',
+  aliases: ['property', 'property name', 'property_name', 'property code', 'property_code', 'rm_property_code'],
+  example: 'Campus Walk Apartments  or  cwa',
+  help: 'Property name or Rent Manager code. Leave the column out to use the property picked in this window.',
 };
+
+const TENANT_COLUMNS = [
+  PROPERTY_COLUMN,
+  { key: 'unit_number', name: 'Unit', required: true, aliases: ['unit', 'unit number', 'unit_number', 'unit #', 'unit no', 'apt'],
+    example: '100B', help: "Units that don't exist yet are created automatically (unless you untick that option)." },
+  { key: 'first_name', name: 'First Name', required: false, aliases: ['first name', 'first_name', 'firstname', 'first'], example: 'Paul' },
+  { key: 'last_name', name: 'Last Name', required: 'Yes, unless you use a Name column', aliases: ['last name', 'last_name', 'lastname', 'last'], example: 'Ianazzo' },
+  { key: 'full_name', name: 'Name', required: 'Instead of First Name + Last Name', aliases: ['name', 'tenant name', 'tenant', 'full name', 'resident', 'resident name'],
+    example: 'Ianazzo, Paul  or  Paul Ianazzo', help: 'Used only when there is no Last Name column.' },
+  { key: 'email', name: 'Email', required: false, aliases: ['email', 'email address', 'e-mail'], example: 'paul@example.com',
+    help: 'Needed to email statements and for the resident portal.' },
+  { key: 'phone', name: 'Phone', required: false, aliases: ['phone', 'phone number', 'cell', 'mobile', 'telephone'], example: '(850) 555-0123' },
+  { key: 'account_number', name: 'Account Number', required: 'Recommended', aliases: ['account', 'account number', 'account_number', 'account #', 'tenant id', 'tenant_id', 'acct'],
+    example: '33580', help: 'Rent Manager tenant account. Re-importing updates the tenant with the same account number instead of adding a duplicate.' },
+  { key: 'mailing_address', name: 'Address', required: false, aliases: ['address', 'mailing address', 'mailing_address', 'street'],
+    example: '810 Wadsworth St Apt #100B, Tallahassee, FL 32304', help: "Printed on statements. Leave blank to use the property's address and unit." },
+  { key: 'move_in', name: 'Move In', required: true, aliases: ['move in', 'move-in', 'move_in', 'move in date', 'move-in date', 'movein'],
+    example: '08/01/2025  or  2025-08-01' },
+  { key: 'move_out', name: 'Move Out', required: false, aliases: ['move out', 'move-out', 'move_out', 'move out date', 'move-out date', 'moveout'],
+    example: '07/31/2026', help: 'Leave blank for current residents.' },
+  { key: 'occupants', name: 'Occupants', required: false, aliases: ['occupants', 'people', 'number of occupants', 'household size', '# occupants'],
+    example: '2', help: 'Number of people in the unit. Defaults to 1.' },
+  { key: 'sqft', name: 'Sq Ft', required: false, aliases: ['sqft', 'sq ft', 'square feet', 'square footage', 'sf'], example: '850',
+    help: "Fills in the unit's square footage." },
+  { key: 'bedrooms', name: 'Bedrooms', required: false, aliases: ['bedrooms', 'beds', 'br', 'bedroom'], example: '2',
+    help: "Fills in the unit's bedrooms." },
+];
+
+const UNIT_COLUMNS = [
+  PROPERTY_COLUMN,
+  { key: 'unit_number', name: 'Unit', required: true,
+    aliases: ['unit', 'unit number', 'unit_number', 'unit #', 'unit no', 'unit name', 'unit_name', 'unitname', 'unit id', 'apt', 'apt #', 'apartment'],
+    example: '100B', help: 'An existing unit with the same number (upper/lower case ignored) is updated.' },
+  { key: 'sqft', name: 'Sq Ft', required: 'Needed if you split by square footage',
+    aliases: ['sqft', 'sq ft', 'sq. ft.', 'sq.ft.', 'square feet', 'square_feet', 'square footage', 'sf', 'size', 'unit size'],
+    example: '1,050  or  850 sq ft' },
+  { key: 'bedrooms', name: 'Bedrooms', required: 'Needed if you split by bedrooms', aliases: ['bedrooms', 'bedroom', 'beds', 'bed', 'br', 'bd'], example: '2' },
+  { key: 'bathrooms', name: 'Bathrooms', required: false, aliases: ['bathrooms', 'bathroom', 'baths', 'bath', 'ba'], example: '1.5' },
+  { key: 'notes', name: 'Notes', required: false, aliases: ['notes', 'note', 'comments', 'unit type', 'type', 'floorplan', 'floor plan'], example: '2x1 corner unit' },
+];
+
+const aliasMap = (cols) => Object.fromEntries(cols.map((c) => [c.key, c.aliases]));
+const IMPORT_ALIASES = aliasMap(TENANT_COLUMNS);
 
 function mapImportRow(raw) {
   const lower = {};
@@ -269,14 +305,7 @@ function mapImportRow(raw) {
 }
 
 // ---- unit import
-const UNIT_ALIASES = {
-  property: IMPORT_ALIASES.property,
-  unit_number: ['unit', 'unit number', 'unit_number', 'unit #', 'unit no', 'unit name', 'unit_name', 'unitname', 'unit id', 'apt', 'apt #', 'apartment'],
-  sqft: ['sqft', 'sq ft', 'sq. ft.', 'sq.ft.', 'square feet', 'square_feet', 'square footage', 'sf', 'size', 'unit size'],
-  bedrooms: ['bedrooms', 'bedroom', 'beds', 'bed', 'br', 'bd'],
-  bathrooms: ['bathrooms', 'bathroom', 'baths', 'bath', 'ba'],
-  notes: ['notes', 'note', 'comments', 'unit type', 'type', 'floorplan', 'floor plan'],
-};
+const UNIT_ALIASES = aliasMap(UNIT_COLUMNS);
 
 // Reads the number at the start of a cell: "1,050", "850 sq ft", "2 BR", "1.5".
 function leadingNumber(v, label) {
@@ -670,6 +699,7 @@ async function handle({ request, env }) {
 
   if (name === 'tenants' && id === 'import' && method === 'POST') return json(await importTenants(db, await body(request)));
   if (name === 'units' && id === 'import' && method === 'POST') return json(await importUnits(db, await body(request)));
+  if (name === 'import-columns' && method === 'GET') return json({ tenants: TENANT_COLUMNS, units: UNIT_COLUMNS });
   if (name === 'tenants' && id && action === 'reset-portal' && method === 'POST') {
     await db.batch([
       db.prepare('UPDATE tenants SET password_hash = NULL WHERE id = ?').bind(id),

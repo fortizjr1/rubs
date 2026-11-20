@@ -142,3 +142,12 @@ button.primary.danger-fill:hover { background: #b42318; }
 .mt-sm { margin-top: .5rem; }
 .modal ul { margin: .25rem 0 .75rem; padding-left: 1.25rem; }
 .warn { color: var(--warn); }
+details.hint { background: #f8fafc; border: 1px solid var(--line); border-radius: 8px; padding: .6rem .8rem; margin-bottom: 1rem; }
+details.hint summary { font-weight: 600; }
+table.col-guide { font-size: .82rem; margin-top: .25rem; background: #fff; }
+table.col-guide th, table.col-guide td { padding: .4rem .55rem; }
+table.col-guide td:first-child { min-width: 170px; }
+table.col-guide code { white-space: nowrap; font-size: .8rem; }
+.col-check { margin-bottom: 1rem; padding: .8rem 1rem; }
+.col-check ul { list-style: none; padding: 0; margin: .5rem 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: .2rem .8rem; font-size: .85rem; }
+.ok { color: var(--ok); }

@@ -432,14 +432,49 @@ async function tenantsView(el, { propertyId, filters = {} }) {
   });
 }
 
+let importColumnsCache;
+const getImportColumns = async () => (importColumnsCache ??= await api('/admin/import-columns'));
+
+function columnGuide(cols) {
+  return `<table class="col-guide"><thead><tr><th>Column name</th><th>Required?</th><th>Example</th><th>Also accepted as</th></tr></thead><tbody>
+    ${cols.map((c) => `<tr><td><b>${esc(c.name)}</b>${c.help ? `<div class="muted">${esc(c.help)}</div>` : ''}</td>
+      <td>${c.required === true ? '<span class="badge danger">Required</span>' : c.required ? `<span class="badge draft">${esc(c.required)}</span>` : '<span class="muted">Optional</span>'}</td>
+      <td><code>${esc(c.example)}</code></td>
+      <td class="muted">${esc(c.aliases.filter((x) => x !== c.name.toLowerCase()).join(', '))}</td></tr>`).join('')}
+    </tbody></table>`;
+}
+
+/** Matches the file's headers to known columns the same way the server does (case-insensitive). */
+function checkColumns(headers, cols, kind, hasPropertyPicked) {
+  const found = {};
+  const mapped = headers.map((h) => {
+    const c = cols.find((col) => col.aliases.includes(h.trim().toLowerCase()));
+    if (c && !found[c.key]) found[c.key] = h;
+    return { header: h, col: c, duplicate: c && found[c.key] !== h };
+  });
+  const missing = [];
+  if (!found.unit_number) missing.push('Unit');
+  if (!found.property && !hasPropertyPicked) missing.push('Property (or pick a property above)');
+  if (kind === 'tenants') {
+    if (!found.last_name && !found.full_name) missing.push('Last Name (or Name)');
+    if (!found.move_in) missing.push('Move In');
+  }
+  return { mapped, missing };
+}
+
 /**
- * Shared CSV import window. Rows are parsed in the browser, previewed, then sent in chunks.
- * opts: {title, help, endpoint, options: [{key, label, checked}], chunk, summary(total) -> text}
+ * Shared CSV import window. Rows are parsed in the browser, checked against the column guide,
+ * previewed, then sent in chunks.
+ * opts: {kind: 'tenants'|'units', title, intro, template, endpoint, options: [{key, label, checked}], chunk, summary(total) -> text}
  */
 async function csvImportModal(propertyId, after, opts) {
-  const props = await getActiveProperties(propertyId);
+  const [props, columns] = await Promise.all([getActiveProperties(propertyId), getImportColumns()]);
+  const cols = columns[opts.kind];
   const m = modal(`<h2>${esc(opts.title)}</h2>
-    <div class="notice small">${opts.help}</div>
+    <p class="small">${opts.intro} <a href="${opts.template}" download>Download a template</a> with the column headers.</p>
+    <details class="hint" open><summary>Which columns do I need?</summary>
+      <p class="small muted">Column names are not case-sensitive and can be in any order. Columns not listed here are ignored.</p>
+      ${columnGuide(cols)}</details>
     <div class="error" hidden></div>
     <div class="form-grid">
       <div class="field full"><label>CSV file</label><input type="file" accept=".csv,text/csv" data-file></div>
@@ -448,21 +483,41 @@ async function csvImportModal(propertyId, after, opts) {
       <div class="field">${opts.options.map((o) => `<label><input type="checkbox" data-opt="${o.key}" ${o.checked ? 'checked' : ''}> ${esc(o.label)}</label>`).join('')}
         <label><input type="checkbox" data-skip> Skip rows with errors and import the rest</label></div>
     </div>
+    <div data-check></div>
     <div data-preview></div>
     <div class="footer"><button data-close>Cancel</button><button class="primary" data-go disabled>Import</button></div>`, { wide: true });
   let rows = [];
+  let headers = [];
   const err = m.querySelector('.error');
   const go = m.querySelector('[data-go]');
+  const propSel = m.querySelector('[data-prop]');
+
+  const renderCheck = () => {
+    if (!rows.length) return;
+    const { mapped, missing } = checkColumns(headers, cols, opts.kind, Boolean(propSel.value));
+    m.querySelector('[data-check]').innerHTML = `<div class="card col-check"><h3 class="m0">Column check</h3>
+      <ul>${mapped.map((x) => x.col
+        ? `<li class="ok">✓ <b>${esc(x.header)}</b> → ${esc(x.col.name)}${x.duplicate ? ' <span class="warn">(another column already matches this, so this one is ignored)</span>' : ''}</li>`
+        : `<li class="muted">– <b>${esc(x.header)}</b>: not recognized, will be ignored</li>`).join('')}</ul>
+      ${missing.length ? `<div class="error m0">Missing required column${missing.length > 1 ? 's' : ''}: <b>${missing.map(esc).join(', ')}</b>.
+        Add the column, or rename a header in your file to one of the names in the guide above.</div>` : '<div class="ok">All required columns found.</div>'}</div>`;
+    go.disabled = missing.length > 0;
+  };
+  propSel.addEventListener('change', renderCheck);
+
   m.querySelector('[data-file]').addEventListener('change', async (e) => {
     err.hidden = true;
     const file = e.target.files[0];
     if (!file) return;
     rows = parseCSV(await file.text());
-    const headers = rows.length ? Object.keys(rows[0]) : [];
+    headers = rows.length ? Object.keys(rows[0]) : [];
     m.querySelector('[data-preview]').innerHTML = rows.length
       ? `<p><b>${rows.length}</b> rows found. Preview:</p>${table({ columns: headers.map((h) => ({ label: h, value: (r) => esc(r[h]) })), rows: rows.slice(0, 5) })}`
       : '<p class="error">No data rows found in that file.</p>';
-    go.disabled = !rows.length;
+    m.querySelector('details.hint').open = false;
+    m.querySelector('[data-check]').innerHTML = '';
+    go.disabled = true;
+    renderCheck();
   });
   go.addEventListener('click', async () => {
     go.disabled = true;
@@ -472,7 +527,7 @@ async function csvImportModal(propertyId, after, opts) {
     try {
       for (let i = 0; i < rows.length; i += opts.chunk) {
         const r = await api(opts.endpoint, { method: 'POST', body: {
-          rows: rows.slice(i, i + opts.chunk), property_id: m.querySelector('[data-prop]').value || null,
+          rows: rows.slice(i, i + opts.chunk), property_id: propSel.value || null,
           skip_errors: m.querySelector('[data-skip]').checked, ...options,
         } });
         for (const [k, v] of Object.entries(r)) if (typeof v === 'number') total[k] = (total[k] || 0) + v;
@@ -492,11 +547,10 @@ async function csvImportModal(propertyId, after, opts) {
 
 function importModal(propertyId, after) {
   return csvImportModal(propertyId, after, {
+    kind: 'tenants',
     title: 'Import tenants from CSV',
-    help: `Columns are matched by name (case doesn't matter). Recognized: <b>Property, Unit, First Name, Last Name</b> (or <b>Name</b>),
-      <b>Email, Phone, Account Number, Address, Move In, Move Out, Occupants, Sq Ft, Bedrooms</b>.
-      Dates can be YYYY-MM-DD or MM/DD/YYYY. Tenants with an existing account number are updated instead of duplicated.
-      <a href="/tenant-import-template.csv" download>Download a template</a>.`,
+    intro: 'One row per tenant. Each tenant needs at least a <b>Unit</b>, a <b>name</b> and a <b>Move In</b> date. Dates can be MM/DD/YYYY or YYYY-MM-DD.',
+    template: '/tenant-import-template.csv',
     endpoint: '/admin/tenants/import',
     chunk: 500,
     options: [{ key: 'create_units', label: "Create units that don't exist yet", checked: true }],
@@ -506,11 +560,10 @@ function importModal(propertyId, after) {
 
 function unitImportModal(propertyId, after) {
   return csvImportModal(propertyId, after, {
+    kind: 'units',
     title: 'Import units from CSV',
-    help: `One row per unit. Columns are matched by name (case doesn't matter): <b>Unit</b> (required), <b>Sq Ft</b>, <b>Bedrooms</b>,
-      <b>Bathrooms</b>, <b>Notes</b>, and <b>Property</b> (name or Rent Manager code) if the file covers several properties.
-      Numbers like "1,050" or "850 sq ft" are fine. A unit that already exists (same unit number) is updated, and blank cells keep the current value.
-      Include vacant units too, so the split rules can count them. <a href="/unit-import-template.csv" download>Download a template</a>.`,
+    intro: 'One row per unit, including vacant units so the split rules can count them. Only <b>Unit</b> is required.',
+    template: '/unit-import-template.csv',
     endpoint: '/admin/units/import',
     chunk: 1000,
     options: [{ key: 'update_existing', label: 'Update units that already exist', checked: true }],

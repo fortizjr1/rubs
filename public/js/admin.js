@@ -450,14 +450,16 @@ async function tenantsView(el, { propertyId, filters = {} }) {
         { label: 'People', cls: 'num', value: (t) => `<span class="inline-edit"><input type="number" class="inline-num" min="0" max="50" step="1"
             value="${esc(t.occupants)}" data-occ="${t.id}" data-was="${esc(t.occupants)}" aria-label="Number of people for ${esc(fullName(t))}"
             title="Type a number, then press Enter or Tab to save"><span class="inline-ok" aria-hidden="true"></span></span>` },
-        { label: 'Status', value: (t) => statusBadge(t.status) + (t.final_pending ? ' <span class="badge draft" title="Moved out: their move-out date is not covered by a finalized billing batch yet">final bill pending</span>' : '')
-          + (t.portal_active ? ' <span class="badge" title="Resident portal activated">portal</span>' : '') },
+        { label: 'Status', value: (t) => statusBadge(t.status) + (t.final_pending ? ' <span class="badge draft" title="Moved out: their move-out date is not covered by a finalized billing batch yet">final bill pending</span>' : '') },
+        { label: 'Portal', value: portalCell, cls: 'portal-col' },
       ],
       rows: tenants,
       actions: (t) => `<button class="link" data-action="viewAs" data-id="${t.id}" title="See the resident portal as this resident">View as resident</button>
         <button class="link" data-action="edit" data-id="${t.id}">Edit</button>
         ${!t.move_out ? `<button class="link" data-action="moveout" data-id="${t.id}">Move out</button>` : ''}
         ${t.portal_active ? `<button class="link" data-action="resetPortal" data-id="${t.id}">Reset login</button>` : ''}
+        ${t.locked_at ? `<button class="link" data-action="unlock" data-id="${t.id}">Unlock</button>`
+          : `<button class="link danger" data-action="lock" data-id="${t.id}">Lock</button>`}
         <button class="link danger" data-action="del" data-id="${t.id}">Delete</button>`,
       empty: 'No tenants found. Add one, or import a CSV.',
     })}
@@ -495,6 +497,19 @@ async function tenantsView(el, { propertyId, filters = {} }) {
             placeholder: '123 New St, Apt 4, Tallahassee, FL 32301' }],
         values: { move_out: new Date().toISOString().slice(0, 10), forwarding_address: t.forwarding_address },
         onSubmit: async (d) => { await api(`/admin/tenants/${id}`, { method: 'PUT', body: d }); toast('Move-out saved'); reload(); } });
+    },
+    lock: ({ id }) => {
+      const t = tenants.find((x) => x.id == id);
+      formModal({ title: `Lock ${fullName(t)}'s portal account`, submitLabel: 'Lock account',
+        intro: `<p class="small">They are signed out right away and can't sign in or re-activate until you unlock the account.
+          They'll see "This account is locked. Please contact the office." Billing, statements and emails are not affected.</p>`,
+        fields: [{ name: 'reason', label: 'Reason (staff only, optional)', full: true, placeholder: 'e.g. Suspicious sign-ins, or requested by resident' }],
+        onSubmit: async (d) => { await api(`/admin/tenants/${id}/lock`, { method: 'POST', body: d }); toast('Account locked'); reload(); } });
+    },
+    unlock: async ({ id }) => {
+      const t = tenants.find((x) => x.id == id);
+      if (!(await confirmBox(`Unlock ${fullName(t)}'s portal account? They can sign in again with their current password.`, 'Unlock'))) return;
+      await api(`/admin/tenants/${id}/unlock`, { method: 'POST' }); toast('Account unlocked'); reload();
     },
     resetPortal: async ({ id }) => {
       if (!(await confirmBox('Reset this resident\'s portal login? They will need to activate their account again.', 'Reset'))) return;
@@ -719,6 +734,31 @@ function bindInlinePeople(root, tenants) {
     if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
     if (e.key === 'Escape') { e.target.value = e.target.dataset.was; e.target.blur(); }
   });
+}
+
+// "2026-11-20 19:45:03" (UTC, from SQLite) -> local date and time
+const dateTime = (sqlUtc) => {
+  if (!sqlUtc) return '';
+  const d = new Date(sqlUtc.replace(' ', 'T') + 'Z');
+  if (isNaN(d)) return sqlUtc;
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleString('en-US', { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }), hour: 'numeric', minute: '2-digit' });
+};
+
+/** Portal column: activated or not, last sign-in time and IP, locked state. */
+function portalCell(t) {
+  const lines = [];
+  if (t.locked_at) {
+    lines.push(`<span class="badge danger">locked</span> <span class="small muted">${esc(dateTime(t.locked_at))}</span>`);
+    if (t.locked_reason) lines.push(`<div class="small muted">${esc(t.locked_reason)}</div>`);
+  } else if (t.portal_active) lines.push('<span class="badge posted">active</span>');
+  else lines.push('<span class="small muted">Not activated</span>');
+  if (t.portal_active) {
+    lines.push(t.last_login_at
+      ? `<div class="small" title="Last sign-in and its IP address">Last login ${esc(dateTime(t.last_login_at))}</div><div class="small muted">IP ${esc(t.last_login_ip || 'unknown')}</div>`
+      : '<div class="small muted">Never signed in</div>');
+  }
+  return `<div class="portal-cell">${lines.join('')}</div>`;
 }
 
 /** Mass edit: number of people and/or move-out date for the selected tenants. */

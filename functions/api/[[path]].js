@@ -81,7 +81,7 @@ const RESOURCES = {
     // move-out date yet, so their final bill still has to be produced.
     list: `SELECT t.id, t.unit_id, t.first_name, t.last_name, t.email, t.phone, t.account_number,
              t.mailing_address, t.forwarding_address, t.move_in, t.move_out, t.occupants, t.notes, t.created_at,
-             (t.password_hash IS NOT NULL) AS portal_active,
+             (t.password_hash IS NOT NULL) AS portal_active, t.last_login_at, t.last_login_ip, t.locked_at, t.locked_reason,
              (t.move_out IS NOT NULL AND t.move_out <= date('now') AND t.move_out >= date('now', '-90 days')
                AND NOT EXISTS (SELECT 1 FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id
                  WHERE s.tenant_id = t.id AND r.status = 'finalized' AND r.period_end >= t.move_out)) AS final_pending,
@@ -740,6 +740,16 @@ async function adminDashboard(db) {
   return { counts: counts.results[0], ytd: ytd.results[0], recent_runs: recent.results };
 }
 
+// ---------------------------------------------------------------- resident portal security
+
+const LOCKED_MESSAGE = 'This account is locked. Please contact the office.';
+
+/** Records a resident's sign-in time and IP (Cloudflare passes the visitor's IP in CF-Connecting-IP). */
+async function recordResidentLogin(db, tenantId, request) {
+  const ip = (request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || '').split(',')[0].trim().slice(0, 64) || null;
+  await db.prepare("UPDATE tenants SET last_login_at = datetime('now'), last_login_ip = ? WHERE id = ?").bind(ip, tenantId).run();
+}
+
 // ---------------------------------------------------------------- router
 
 async function handle({ request, env }) {
@@ -761,9 +771,9 @@ async function handle({ request, env }) {
         const a = await db.prepare('SELECT id, email, name FROM admins WHERE id = ?').bind(s.user_id).first();
         if (a) user = { type: 'admin', ...a };
       } else if (s?.user_type === 'tenant') {
-        const t = await db.prepare('SELECT id, email, first_name, last_name FROM tenants WHERE id = ?').bind(s.user_id).first();
-        if (t) user = { type: 'tenant', id: t.id, email: t.email, name: `${t.first_name || ''} ${t.last_name}`.trim() };
-        if (t && s.impersonated_by) {
+        const t = await db.prepare('SELECT id, email, first_name, last_name, locked_at FROM tenants WHERE id = ?').bind(s.user_id).first();
+        if (t && (!t.locked_at || s.impersonated_by)) user = { type: 'tenant', id: t.id, email: t.email, name: `${t.first_name || ''} ${t.last_name}`.trim() };
+        if (user && s.impersonated_by) {
           const a = await db.prepare('SELECT name, email FROM admins WHERE id = ?').bind(s.impersonated_by).first();
           user.preview = { staff: a ? a.name || a.email : 'Staff', expires_at: s.expires_at };
         }
@@ -790,22 +800,26 @@ async function handle({ request, env }) {
       const isAdmin = b.type === 'admin';
       const row = isAdmin
         ? await db.prepare('SELECT id, password_hash FROM admins WHERE email = ?').bind(email).first()
-        : await db.prepare('SELECT id, password_hash FROM tenants WHERE email = ? AND password_hash IS NOT NULL ORDER BY move_in DESC LIMIT 1').bind(email).first();
+        : await db.prepare('SELECT id, password_hash, locked_at FROM tenants WHERE email = ? AND password_hash IS NOT NULL ORDER BY move_in DESC LIMIT 1').bind(email).first();
       if (!row || !(await verifyPassword(String(b.password || ''), row.password_hash))) {
         throw new HttpError(401, 'Incorrect email or password');
       }
+      if (!isAdmin && row.locked_at) throw new HttpError(403, LOCKED_MESSAGE);
+      if (!isAdmin) await recordResidentLogin(db, row.id, request);
       const token = await createSession(db, isAdmin ? 'admin' : 'tenant', row.id);
       return json({ ok: true, type: isAdmin ? 'admin' : 'tenant' }, 200, { 'Set-Cookie': sessionCookie(token) });
     }
     if (action === 'activate' && method === 'POST') {
       // Resident sets up portal access using their account number + the email on file.
       const b = await body(request);
-      const t = await db.prepare('SELECT id, password_hash FROM tenants WHERE account_number = ? AND email = ?')
+      const t = await db.prepare('SELECT id, password_hash, locked_at FROM tenants WHERE account_number = ? AND email = ?')
         .bind(String(b.account_number || '').trim(), String(b.email || '').trim()).first();
       if (!t) throw new HttpError(400, 'No resident found with that account number and email. Contact the office.');
+      if (t.locked_at) throw new HttpError(403, LOCKED_MESSAGE);
       if (t.password_hash) throw new HttpError(409, 'This account is already activated. Sign in, or ask the office to reset your access.');
       validatePassword(b.password);
       await db.prepare('UPDATE tenants SET password_hash = ? WHERE id = ?').bind(await hashPassword(b.password), t.id).run();
+      await recordResidentLogin(db, t.id, request);
       const token = await createSession(db, 'tenant', t.id);
       return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(token) });
     }
@@ -836,6 +850,13 @@ async function handle({ request, env }) {
   if (seg[0] === 'resident') {
     if (session.user_type !== 'tenant') throw new HttpError(403, 'Resident access only');
     const tid = session.user_id;
+    if (!session.impersonated_by) {
+      const lock = await db.prepare('SELECT locked_at FROM tenants WHERE id = ?').bind(tid).first();
+      if (!lock || lock.locked_at) {
+        await db.prepare('DELETE FROM sessions WHERE token = ?').bind(session.token).run();
+        throw new HttpError(401, LOCKED_MESSAGE);
+      }
+    }
     if (seg[1] === 'me' && method === 'GET') {
       const me = await db.prepare(
         `SELECT t.id, t.first_name, t.last_name, t.email, t.phone, t.account_number, t.mailing_address,
@@ -920,6 +941,21 @@ async function handle({ request, env }) {
     if (!t) throw new HttpError(404, 'Tenant not found');
     const token = await createSession(db, 'tenant', t.id, { impersonatedBy: session.user_id, returnToken: session.token, hours: 2 });
     return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(token, 2 * 3600) });
+  }
+  if (name === 'tenants' && id && (action === 'lock' || action === 'unlock') && method === 'POST') {
+    const t = await db.prepare('SELECT id FROM tenants WHERE id = ?').bind(id).first();
+    if (!t) throw new HttpError(404, 'Tenant not found');
+    if (action === 'lock') {
+      const reason = coerce('text', (await body(request)).reason, 'Reason');
+      await db.batch([
+        db.prepare("UPDATE tenants SET locked_at = datetime('now'), locked_reason = ? WHERE id = ?").bind(reason, id),
+        // Sign the resident out everywhere (staff previews are left alone).
+        db.prepare("DELETE FROM sessions WHERE user_type = 'tenant' AND user_id = ? AND impersonated_by IS NULL").bind(id),
+      ]);
+    } else {
+      await db.prepare('UPDATE tenants SET locked_at = NULL, locked_reason = NULL WHERE id = ?').bind(id).run();
+    }
+    return json({ ok: true });
   }
   if (name === 'tenants' && id && action === 'reset-portal' && method === 'POST') {
     await db.batch([

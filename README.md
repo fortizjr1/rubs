@@ -146,6 +146,12 @@ Any staff member can see the portal exactly as a resident does. Click **Log in a
 - It ends after 2 hours.
 - It works even if the resident hasn't activated their portal.
 
+### Resident portal security
+
+- The Tenants list **Portal** column shows whether a resident has activated their account, plus their **last sign-in time and IP address**. Staff previews ("Log in as a resident") are not counted.
+- **Lock** signs the resident out right away and blocks signing in and re-activating ("This account is locked. Please contact the office."). It takes an optional staff-only reason. **Unlock** restores access with the same password.
+- Locking only affects portal access. Billing, statements and emails continue as normal. Staff can still preview a locked account.
+
 ### Resident portal
 
 Residents open the same URL and click **First time? Activate**. They enter their **account number** and the **email on file**, then choose a password. Residents only see finalized statements and can download them as PDFs. If **Settings → Company & email → Online payment link** is filled in (your Rent Manager Tenant Web Access address), the portal shows a **Pay online** button that opens it in a new tab, and every statement email gets a **Pay online** button and link (or put {pay_link} in the message). The app itself does not take payments or know balances. Staff can reset a resident's login from the Tenants page.

@@ -16,7 +16,7 @@ function statementCard(st) {
   return `<article class="stmt">
     <div class="stmt-head">
       <div><div class="stmt-title">${date(st.period_start)} – ${date(st.period_end)}</div>
-        <div class="muted small">Statement ${date(st.statement_date)} · Due ${date(st.due_date)}</div></div>
+        <div class="muted small">Statement ${date(st.statement_date)} · Due by ${date(st.due_date)}</div></div>
       <div class="stmt-total">${money(st.total_cents)}</div>
     </div>
     <ul class="stmt-lines">${st.lines.map((l) => `<li><span>${esc(l.label)}</span><span>${money(l.amount_cents)}</span></li>`).join('')}</ul>
@@ -59,21 +59,24 @@ export async function startResident(app, user, logout, stopPreview) {
       <h1 class="portal-hello">Hi, ${esc(me.first_name || fullName(me))}</h1>
       <section class="due ${latest ? '' : 'none'}">
         ${latest ? `<div>
-            <div class="due-label">Amount due</div>
+            <div class="due-label">Latest utility charges</div>
             <div class="due-amount">${money(latest.total_cents)}</div>
-            <div class="due-meta">Due ${date(latest.due_date)} · Service ${date(latest.period_start)} – ${date(latest.period_end)}</div>
+            <div class="due-meta">Statement ${date(latest.statement_date)} · Service ${date(latest.period_start)} – ${date(latest.period_end)}</div>
           </div>
           <div class="due-actions">
             <a class="btn light" href="${pdfUrl(latest)}" target="_blank" rel="noopener">${ICONS.download}<span>Download statement</span></a>
-            <div class="due-note">Posted to your resident ledger. Pay with your rent.</div>
           </div>`
-        : '<div><div class="due-label">Amount due</div><div class="due-amount">$0.00</div><div class="due-meta">No utility statements have been posted to your account yet.</div></div>'}
+        : `<div><div class="due-label">Latest utility charges</div>
+            <div class="due-amount none">No statements yet</div>
+            <div class="due-meta">Your utility statements will appear here once the office posts them.</div></div>`}
+        <p class="due-disclaimer">This shows what was billed to you for utilities, not your current balance. Charges are posted to your
+          resident account in Rent Manager. Check your balance and make payments there, or contact the office.</p>
       </section>
 
       <div class="portal-grid">
         <section>
           <div class="section-head"><h2>Statements</h2>
-            <span class="muted small">${statements.length} statement${statements.length === 1 ? '' : 's'} · ${money(ytd)} in ${year}</span></div>
+            <span class="muted small">${statements.length} statement${statements.length === 1 ? '' : 's'} · ${money(ytd)} billed in ${year}</span></div>
           ${statements.length ? statements.map(statementCard).join('') : '<div class="card empty">Your statements will appear here once the office posts them.</div>'}
         </section>
         <aside>

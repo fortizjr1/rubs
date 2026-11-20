@@ -288,3 +288,5 @@ button.ghost:hover { background: rgba(255,255,255,.1); }
   .due-actions { align-items: flex-start; }
   .portal-user-name .portal-sub { display: none; }
 }
+.due .due-amount.none { font-size: 1.6rem; }
+.due-disclaimer { flex-basis: 100%; margin: .25rem 0 0; padding-top: .9rem; border-top: 1px solid rgba(255,255,255,.15); font-size: .85rem; color: #c9d8e4; position: relative; z-index: 1; }

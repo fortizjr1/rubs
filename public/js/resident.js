@@ -2,7 +2,7 @@
 // account and unit details. Also used for the read-only staff preview ("Log in as a resident").
 import { api, esc, money, date, fullName, toast, formModal, onActions, ICONS, initials } from './ui.js';
 
-const BASIS = { sqft: 'square footage', bedrooms: 'bedrooms', occupants: 'number of occupants', equal: 'equal share per unit' };
+const BASIS = { sqft: 'square footage', bedrooms: 'bedrooms', bathrooms: 'bathrooms', occupants: 'number of people', equal: 'equal share per unit' };
 const pdfUrl = (st) => `/api/resident/statements/${st.id}/pdf`;
 
 function howCalculated(st) {

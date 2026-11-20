@@ -303,3 +303,35 @@ tr:hover .inline-num { border-color: #b8c0cc; }
 .inline-num:disabled { opacity: .6; }
 .inline-ok { width: 1rem; color: var(--ok); font-weight: 700; }
 .inline-ok.saving::after { content: '…'; color: var(--muted); }
+/* split rule (RUBS template) form */
+.rubs-grid { display: grid; grid-template-columns: 1fr 1.25fr; gap: 1rem; }
+@media (max-width: 900px) { .rubs-grid { grid-template-columns: 1fr; } }
+.flat-card { box-shadow: none; border: 1px solid var(--line); }
+.flat-card h3 { margin: 0 0 .75rem; font-size: 1rem; }
+.suffix { position: relative; }
+.suffix input { padding-right: 1.8rem; text-align: right; }
+.suffix span { position: absolute; right: .65rem; top: 50%; transform: translateY(-50%); color: var(--muted); }
+.radio-row { display: flex; align-items: center; gap: .55rem; font-weight: 400; padding: .45rem .6rem; border-radius: 8px; margin: 0; }
+.radio-row:hover { background: #f5f7fa; }
+.radio-row input { width: auto; }
+.factors { margin: .5rem 0 0 .6rem; padding: .75rem; border: 1px solid var(--line); border-radius: 10px; display: grid; gap: .6rem; }
+.factor-row { display: grid; grid-template-columns: 9rem 6rem 1fr; align-items: center; gap: .6rem; }
+.factor-row .scope label { display: inline-flex; align-items: center; gap: .25rem; font-weight: 400; margin: 0 0 0 .5rem; }
+.factor-row .scope input { width: auto; }
+.small-input input { padding: .35rem .5rem; padding-right: 1.6rem; }
+.switch { display: inline-flex; align-items: center; gap: .5rem; font-weight: 600; margin: 0; cursor: pointer; }
+.switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.switch span { width: 2.1rem; height: 1.2rem; border-radius: 999px; background: #c5ccd6; position: relative; transition: background .15s; flex: none; }
+.switch span::after { content: ''; position: absolute; top: .15rem; left: .15rem; width: .9rem; height: .9rem; border-radius: 50%; background: #fff; transition: transform .15s; }
+.switch input:checked + span { background: var(--primary); }
+.switch input:checked + span::after { transform: translateX(.9rem); }
+.switch input:focus-visible + span { outline: 2px solid #c7d7fe; }
+.factor-total { font-weight: 700; font-size: .9rem; }
+.factor-total.ok { color: var(--ok); }
+.factor-total.bad { color: var(--danger); }
+.mr-auto { margin-right: auto; }
+.test-form .field { margin-bottom: 0; }
+.test-form { align-items: flex-end; margin-bottom: 1rem; }
+.test-cards { grid-template-columns: repeat(4, 1fr); margin-bottom: 1rem; }
+@media (max-width: 800px) { .test-cards { grid-template-columns: 1fr 1fr; } .factor-row { grid-template-columns: 1fr 6rem; } .factor-row .scope { grid-column: 1 / -1; } }
+.weighting { display: flex; align-items: center; gap: .4rem; font-weight: 400; margin: 0 0 .2rem; flex-wrap: wrap; } .weighting select { width: auto; padding: .3rem .5rem; }

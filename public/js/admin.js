@@ -5,6 +5,7 @@ import {
 } from './ui.js';
 import { runsTable, runsView, runForm, runDetailPage, emailSettingsView } from './billing.js';
 import { DEFAULT_TEXT } from './shared/statement-pdf.js';
+import { rubsTemplateModal, testCalculationModal, describeAllocation } from './rubs-ui.js';
 
 let root, currentUser, doLogout;
 
@@ -877,15 +878,7 @@ const UTILITY_FIELDS = [
 
 function describeCharge(u) {
   if (u.charge_method === 'flat') return `Fixed ${money(u.flat_amount_cents)} per resident${u.flat_prorate ? ', prorated by days' : ''}`;
-  return `${u.recovery_pct}% to residents · ${describeWeights(u)}`;
-}
-
-function describeWeights(u) {
-  const parts = [['w_sqft', 'sq ft'], ['w_bedrooms', 'bedrooms'], ['w_occupants', 'occupants'], ['w_equal', 'equal']]
-    .filter(([k]) => Number(u[k]) > 0);
-  const total = parts.reduce((s, [k]) => s + Number(u[k]), 0);
-  if (!total) return '<span class="error small">Not set</span>';
-  return parts.map(([k, l]) => `${Math.round((Number(u[k]) / total) * 1000) / 10}% ${l}`).join(' + ');
+  return `${u.recovery_pct}% tenant contribution · ${describeAllocation(u)}`;
 }
 
 async function utilitiesView(el, { propertyId }) {
@@ -902,7 +895,8 @@ async function utilitiesView(el, { propertyId }) {
   const fixed = utils.filter((u) => u.charge_method === 'flat');
   const nameCell = (u) => esc(u.utility_name) + (u.active ? '' : ' <span class="badge">inactive</span>');
   const lineCell = (u) => esc(lineOf(u)) + (lineOf(u) !== u.utility_name ? ' <span class="badge">combined</span>' : '');
-  const actions = (u) => `<button class="link" data-action="edit" data-id="${u.id}">Edit</button>
+  const actions = (u) => `<button class="link" data-action="test" data-id="${u.id}">Test calculation</button>
+    <button class="link" data-action="edit" data-id="${u.id}">Edit</button>
     <button class="link danger" data-action="del" data-id="${u.id}">Delete</button>`;
   const div = document.createElement('div');
   div.innerHTML = `${lines.length ? `<div class="card mb statement-preview"><h3 class="m0">On the statement</h3>
@@ -920,7 +914,7 @@ async function utilitiesView(el, { propertyId }) {
           { label: 'Utility', value: nameCell },
           { label: 'On statement as', value: lineCell },
           { label: 'RM charge code', value: 'rm_charge_code' },
-          { label: 'Split rule', value: (u) => `${describeCharge(u)}<div class="muted small">Vacant units: ${u.vacancy_mode === 'owner' ? 'owner pays' : 'split among occupied'}</div>` },
+          { label: 'Split rule', value: (u) => esc(describeCharge(u)) },
           { label: 'Tax', value: (u) => (Number(u.tax_pct) ? `${u.tax_pct}%` : '—'), cls: 'num' },
           { label: 'Order', value: 'sort_order', cls: 'num' },
         ],
@@ -949,14 +943,17 @@ async function utilitiesView(el, { propertyId }) {
     <details class="hint"><summary>How the split and statement lines work</summary>${UTILITY_HELP}</details>`;
   el.replaceChildren(div);
   const reload = () => utilitiesView(el, { propertyId });
+  // Utilities split from the bill use the Rent Manager-style template form; fixed charges use the simple form.
   const openForm = (title, values, save) => {
+    if (values.charge_method !== 'flat') return rubsTemplateModal({ title, values, save, utilityId: values.id });
     const m = formModal({ title, fields: UTILITY_FIELDS, wide: true, values, onSubmit: save });
     toggleGroups(m.querySelector('form'), 'charge_method');
   };
   const create = async (d) => { await api('/admin/utilities', { method: 'POST', body: { ...d, property_id: propertyId } }); toast('Saved'); reload(); };
   onActions(div, {
     addSplit: () => openForm('Add utility (from the utility bill)',
-      { charge_method: 'rubs', recovery_pct: 100, w_sqft: 100, vacancy_mode: 'owner', vacant_occupants: 1, active: true, tax_pct: 0, flat_prorate: true }, create),
+      { charge_method: 'rubs', recovery_pct: 100, allocation_mode: 'factors', w_occupants: 50, w_sqft: 50, sqft_scope: 'all', occupancy_weighting: 'headcount', active: true, tax_pct: 0 }, create),
+    test: ({ id }) => testCalculationModal(utils.find((u) => u.id == id)),
     addFixed: () => openForm('Add fixed monthly charge',
       { charge_method: 'flat', recovery_pct: 100, vacancy_mode: 'owner', vacant_occupants: 1, active: true, tax_pct: 0, flat_prorate: true }, create),
     edit: ({ id }) => openForm('Edit charge', utils.find((u) => u.id == id),

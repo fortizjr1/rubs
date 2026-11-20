@@ -228,6 +228,8 @@ export function onActions(root, handlers) {
     const el = e.target.closest('[data-action]');
     if (!el || !root.contains(el)) return;
     const fn = handlers[el.dataset.action];
-    if (fn) { e.preventDefault(); Promise.resolve(fn(el.dataset, el)).catch((err) => toast(err.message, true)); }
+    // stopPropagation: views are nested (e.g. a property page holding its Units tab), and both may
+    // use the same action name ("edit"); only the innermost view should handle the click.
+    if (fn) { e.preventDefault(); e.stopPropagation(); Promise.resolve(fn(el.dataset, el)).catch((err) => toast(err.message, true)); }
   });
 }

@@ -2,28 +2,17 @@
 // review one statement per resident, finalize, then download PDFs / email / export.
 import { api, esc, money, date, fullName, toast, modal, closeModal, confirmBox, table, onActions } from './ui.js';
 import { statementsPdf } from './shared/statement-pdf.js';
+import { describeRule } from './rubs-ui.js';
 
 const propertyLabel = (p) => (p.active ? p.name : `${p.name} (inactive)`);
 
 const statusBadge = (s) => `<span class="badge ${esc(s)}">${esc(s === 'finalized' ? 'finalized' : s)}</span>`;
-const pct = (n) => `${Math.round(Number(n) * 100) / 100}%`;
 
 const lineLabel = (u) => (u.statement_label || '').trim() || u.utility_name;
 
 // Short description of how a utility or charge is billed.
-function chargeRule(u) {
-  const tax = Number(u.tax_pct) ? ` · +${pct(u.tax_pct)} tax` : '';
-  if (u.charge_method === 'flat') return `Fixed ${money(u.flat_amount_cents)} per resident${Number(u.flat_prorate) ? ', prorated by days' : ''}${tax}`;
-  return `${pct(u.recovery_pct)} to residents · ${splitRule(u)}${tax}`;
-}
+const chargeRule = describeRule;
 
-function splitRule(u) {
-  const parts = [['w_sqft', 'sq ft'], ['w_bedrooms', 'bedrooms'], ['w_occupants', 'occupants'], ['w_equal', 'equal']]
-    .filter(([k]) => Number(u[k]) > 0);
-  const total = parts.reduce((s, [k]) => s + Number(u[k]), 0);
-  if (!total) return 'No split rule set';
-  return parts.map(([k, l]) => `${Math.round((Number(u[k]) / total) * 1000) / 10}% ${l}`).join(' + ');
-}
 
 // --------------------------------------------------------------- list
 
@@ -217,7 +206,7 @@ export async function runDetailPage(root, id) {
     ${table({
       columns: [
         { label: 'Utility', value: (b) => `<b>${esc(b.utility_name)}</b><div class="muted small">${esc(b.rm_charge_code || '')}</div>` },
-        { label: 'How it is charged', value: (b) => `${esc(chargeRule(b))}${b.charge_method === 'flat' ? '' : `<div class="muted small">Vacant units: ${b.vacancy_mode === 'owner' ? 'owner pays' : 'split among occupied'}</div>`}${b.statement_label !== b.utility_name ? `<div class="muted small">On statement as "${esc(b.statement_label)}"</div>` : ''}` },
+        { label: 'How it is charged', value: (b) => `${esc(chargeRule(b))}${b.statement_label !== b.utility_name ? `<div class="muted small">On statement as "${esc(b.statement_label)}"</div>` : ''}` },
         { label: 'Bill amount', value: (b) => (b.charge_method === 'flat' ? '<span class="muted">fixed</span>' : money(b.total_cents)), cls: 'num' },
         { label: 'Residents pay', value: (b) => (b.summary ? money(b.summary.resident_share_cents) : '—'), cls: 'num' },
         { label: 'Vacant (owner)', value: (b) => (b.summary && b.charge_method !== 'flat' ? money(b.summary.vacancy_cents) : '—'), cls: 'num' },

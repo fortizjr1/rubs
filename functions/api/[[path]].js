@@ -9,7 +9,7 @@ import {
 import { HttpError, json, body, today, blank, coerce } from '../../lib/util.js';
 import { loadSettings, saveSettings, sendTestEmail } from '../../lib/settings.js';
 import {
-  listRuns, runDetail, createRun, updateRun, deleteRun, calculateRun, setRunStatus,
+  listRuns, runDetail, createRun, updateRun, deleteRun, calculateRun, setRunStatus, testUtility,
   statementRenderData, pdfResponse, emailStatement,
 } from '../../lib/billing.js';
 
@@ -108,6 +108,10 @@ const RESOURCES = {
       vacancy_mode: [['owner', 'occupied'], 'Vacancy handling'], vacant_occupants: ['num', 'Vacant unit occupant factor'],
       admin_fee_cents: ['int', 'Admin fee'], tax_pct: ['num', 'Tax %'], sort_order: ['int', 'Order on statement'],
       statement_label: ['text', 'Show on statement as'], charge_method: [['rubs', 'flat'], 'How it is charged'],
+      allocation_mode: [['even_all', 'even_occupied', 'factors'], 'Allocation'], w_bathrooms: ['num', 'Bathrooms weight'],
+      sqft_scope: [['all', 'occupied'], 'Square footage of'], bedrooms_scope: [['all', 'occupied'], 'Bedrooms of'],
+      bathrooms_scope: [['all', 'occupied'], 'Bathrooms of'],
+      occupancy_weighting: [['headcount', 'cap2', 'half', 'conservice'], 'Occupancy weighting'],
       flat_amount_cents: ['int', 'Fixed amount'], flat_prorate: ['bool', 'Prorate by days'],
       active: ['bool', 'Active'], notes: ['text', 'Notes'],
     },
@@ -119,9 +123,15 @@ const RESOURCES = {
     validate: (r) => {
       if (r.tax_pct != null && (r.tax_pct < 0 || r.tax_pct > 100)) throw new HttpError(400, 'Tax % must be between 0 and 100');
       if (r.charge_method === 'flat' && !(r.flat_amount_cents > 0)) throw new HttpError(400, 'Enter the fixed amount charged to each resident');
+      if (r.charge_method !== 'flat' && r.allocation_mode === 'factors') {
+        // Like Rent Manager: the active allocation factors must add up to 100%.
+        const total = ['w_occupants', 'w_sqft', 'w_bedrooms', 'w_bathrooms'].reduce((t, k) => t + (Number(r[k]) || 0), 0);
+        if (total <= 0) throw new HttpError(400, 'Turn on at least one allocation factor');
+        if (Math.abs(total - 100) > 0.01) throw new HttpError(400, `The allocation factors add up to ${Math.round(total * 100) / 100}%. They must total 100%.`);
+      }
       if (r.flat_amount_cents != null && r.flat_amount_cents < 0) throw new HttpError(400, 'Fixed amount cannot be negative');
       if (r.recovery_pct != null && (r.recovery_pct < 0 || r.recovery_pct > 100)) throw new HttpError(400, 'Recovery % must be between 0 and 100');
-      for (const k of ['w_sqft', 'w_bedrooms', 'w_occupants', 'w_equal']) {
+      for (const k of ['w_sqft', 'w_bedrooms', 'w_bathrooms', 'w_occupants', 'w_equal']) {
         if (r[k] != null && r[k] < 0) throw new HttpError(400, 'Weights cannot be negative');
       }
     },
@@ -182,7 +192,10 @@ async function createResource(db, name, input) {
     data.flat_amount_cents ??= 0;
     data.flat_prorate ??= 1;
     data.active ??= 1;
-    for (const k of ['w_sqft', 'w_bedrooms', 'w_occupants', 'w_equal']) data[k] ??= 0;
+    for (const k of ['w_sqft', 'w_bedrooms', 'w_bathrooms', 'w_occupants', 'w_equal']) data[k] ??= 0;
+    data.allocation_mode ??= 'factors';
+    for (const k of ['sqft_scope', 'bedrooms_scope', 'bathrooms_scope']) data[k] ??= 'all';
+    data.occupancy_weighting ??= 'headcount';
     if (data.sort_order === null) {
       const m = await db.prepare('SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM property_utilities WHERE property_id = ?').bind(data.property_id).first();
       data.sort_order = m.n;
@@ -208,7 +221,7 @@ async function updateResource(db, name, id, input) {
   const data = cleanInput(res, input, true);
   // Validate cross-field rules against the merged record.
   res.validate?.({ ...existing, ...data });
-  for (const k of ['sqft', 'bedrooms', 'bathrooms', 'occupants', 'recovery_pct', 'w_sqft', 'w_bedrooms', 'w_occupants', 'w_equal', 'vacant_occupants', 'admin_fee_cents', 'tax_pct', 'sort_order', 'flat_amount_cents', 'active']) {
+  for (const k of ['sqft', 'bedrooms', 'bathrooms', 'occupants', 'recovery_pct', 'w_sqft', 'w_bedrooms', 'w_occupants', 'w_equal', 'vacant_occupants', 'admin_fee_cents', 'tax_pct', 'sort_order', 'flat_amount_cents', 'w_bathrooms', 'active']) {
     if (k in data && data[k] === null) data[k] = 0;
   }
   if ('recovery_pct' in input && blank(input.recovery_pct)) data.recovery_pct = 100;
@@ -649,7 +662,18 @@ async function exportCharges(db, url) {
   if (p('unexported') === '1') sql += ' AND s.exported_at IS NULL';
   sql += ' ORDER BY p.name, r.period_end, u.unit_number COLLATE NOCASE';
   const statements = (await db.prepare(sql).bind(...args).all()).results;
-  const rows = statements.flatMap((s) => JSON.parse(s.lines).map((line) => ({ ...s, line, reverse })));
+  // One row per Rent Manager charge code per statement: lines that share a code (e.g. Water, Sewer and
+  // Utility tax all posted as UTIL) become a single charge, matching how the bill is posted in Rent Manager.
+  const byCode = (lines) => {
+    const m = new Map();
+    for (const l of lines) {
+      const k = String(l.charge_code || l.label).trim().toUpperCase();
+      const g = m.get(k);
+      if (g) { g.amount_cents += l.amount_cents; g.label = `${g.label} + ${l.label}`; } else m.set(k, { ...l });
+    }
+    return [...m.values()];
+  };
+  const rows = statements.flatMap((s) => byCode(JSON.parse(s.lines)).map((line) => ({ ...s, line, reverse })));
   if (reverse) return csvResponse(`rent-manager-REVERSAL-${today()}.csv`, toCSV(RM_CHARGE_COLUMNS, rows));
   if (p('mark') === '1' && statements.length) {
     const ids = statements.map((r) => r.id);
@@ -877,6 +901,7 @@ async function handle({ request, env }) {
 
   if (name === 'tenants' && id === 'import' && method === 'POST') return json(await importTenants(db, await body(request), session.user_id));
   if (name === 'units' && id === 'import' && method === 'POST') return json(await importUnits(db, await body(request), session.user_id));
+  if (name === 'utilities' && id && action === 'test' && method === 'POST') return json(await testUtility(db, id, await body(request)));
   if (name === 'tenants' && id === 'bulk-update' && method === 'POST') return json(await bulkUpdateTenants(db, await body(request)));
   if (name === 'tenants' && id === 'bulk-delete' && method === 'POST') return json(await deleteTenants(db, cleanIds(await body(request))));
   if (name === 'units' && id === 'bulk-delete' && method === 'POST') return json(await deleteUnits(db, cleanIds(await body(request))));

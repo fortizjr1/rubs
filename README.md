@@ -83,7 +83,14 @@ In Cloudflare go to **Security → WAF → Rate limiting rules** (the free plan 
    For Maileroo, copy the SMTP credentials of your sending domain (server `smtp.maileroo.com`, port 465 with SSL, or 587 with STARTTLS). The From email must use that domain.
 2. **Properties → Add property**: fill in the address, office phone and email (printed on statements), days until due, and the Rent Manager property code.
 3. On the property's **Utilities & fixed charges** tab, set up two kinds of charges:
-   - **Utility bill (split with RUBS)**: the utilities on the utility company's bill, usually Water and Sewer. Set the recovery %, split weights, tax % and RM charge code. You enter the bill amounts in each batch.
+   - **Utility bill (split with RUBS)**: the utilities on the utility company's bill, usually Water and Sewer. The form mirrors Rent Manager's RUBS Template:
+     - **Tenant contribution %**.
+     - **Allocation**: divide evenly across all units, divide evenly across occupied units only, or choose allocation factors.
+     - **Factors**: Occupancy, Square Feet, Bedrooms and Bathrooms, with percentages that must total 100%.
+       - Square Feet, Bedrooms and Bathrooms each use either all units (the owner pays vacant units' share) or occupied units only.
+       - Occupancy only counts occupied units, using the People field. **Count people as** sets the weighting: headcount, Conservice factored (1.0 / 1.6 / 1.9 / 2.2, +0.3 each additional), 1.0 + 0.5 per additional, or capped at 2.
+     - **Test calculation** runs the rule on a sample bill with the current units and residents, so you can compare it with Rent Manager's Test Calculation.
+     - If the bill includes a tax that should be split the same way (e.g. the City's public service tax on water), add it as its own utility with the same rule and 0% "Tax added".
    - **Fixed monthly charges**: Trash, Pest Control, Internet, Cable and so on, with an amount per resident (optionally prorated by days lived there). Every batch adds them automatically.
    - **Show on statement as** combines charges into one statement line and one Rent Manager row, e.g. Water + Sewer → "Water & Sewer", or Internet + Pest Control + Trash → "Amenity Fee". The combined line uses the RM charge code of its first charge.
 4. On the property's **Units** tab, click **Import CSV** to load every unit, including vacant ones, with its square footage, bedrooms and bathrooms (see `public/unit-import-template.csv`). Re-importing updates existing units, and blank cells keep their current values.
@@ -129,7 +136,7 @@ In Cloudflare go to **Security → WAF → Rate limiting rules** (the free plan 
 
 `PropertyCode, Unit, TenantAccount, TenantName, ChargeType, Amount, TransactionDate, DueDate, Comment, PeriodStart, PeriodEnd`
 
-Each statement line is one row: each utility uses its RM charge code, tax uses the property's tax code, and the fee uses the fee code. To rename or reorder the columns, edit `RM_CHARGE_COLUMNS` in `functions/api/[[path]].js`.
+Lines on the same statement that share a charge code are combined into one row. For example, Water, Sewer and Utility tax all coded UTIL become a single UTIL charge per resident. Each resident's share is rounded to the penny, and the owner's share absorbs any rounding difference. To rename or reorder the columns, edit `RM_CHARGE_COLUMNS` in `functions/api/[[path]].js`.
 
 ### Log in as a resident (staff preview)
 

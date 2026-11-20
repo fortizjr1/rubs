@@ -196,6 +196,14 @@ tests/             Calculation tests
 
 ## Database backups
 
+In the app: **Settings → System & storage** shows the database size against the free-plan limit,
+record counts, server and stack details, and has **Download SQL backup** / **Download JSON backup**.
+The SQL file is data only: restore it into a database that has the migrations applied
+(`npx wrangler d1 execute <database> --remote --file=backup.sql`). Passwords (and therefore staff
+accounts) are only included when you tick "Include passwords".
+
+From the command line (schema and data):
+
 ```bash
 npx wrangler d1 export rubs-billing-db --remote --output backup.sql
 ```

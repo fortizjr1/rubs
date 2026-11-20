@@ -8,6 +8,7 @@ import {
 } from '../../lib/auth.js';
 import { HttpError, json, body, today, blank, coerce } from '../../lib/util.js';
 import { loadSettings, saveSettings, sendTestEmail } from '../../lib/settings.js';
+import { systemInfo, backupPage } from '../../lib/system.js';
 import {
   listRuns, runDetail, createRun, updateRun, deleteRun, calculateRun, setRunStatus, testUtility,
   statementRenderData, pdfResponse, emailStatement,
@@ -992,6 +993,15 @@ async function handle({ request, env }) {
     if (method === 'GET' && !id) return json(await loadSettings(db));
     if (method === 'PUT' && !id) return json(await saveSettings(db, await body(request)));
     if (method === 'POST' && id === 'test-email') return json(await sendTestEmail(db, (await body(request)).to));
+  }
+
+  // ---- Settings → System: storage, stack and backups
+  if (name === 'system' && method === 'GET') {
+    if (!id) return json(await systemInfo(db, request));
+    if (id === 'backup') {
+      const q = url.searchParams;
+      return json(await backupPage(db, { table: q.get('table'), offset: q.get('offset'), secrets: q.get('secrets') === '1' }));
+    }
   }
 
   if (name === 'admins') {

@@ -1052,12 +1052,13 @@ async function exportsPage() {
 // --------------------------------------------------------------- settings
 
 async function settingsPage(tab) {
-  const tabs = [['email', 'Company & email'], ['staff', 'Staff accounts']];
+  const tabs = [['email', 'Company & email'], ['staff', 'Staff accounts'], ['system', 'System & storage']];
   const div0 = mount(`<div class="topbar"><h1>Settings</h1></div>
     <div class="tabs">${tabs.map(([k, l]) => `<a href="#/settings/${k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}</div>
     <div data-tab></div>`);
   const el = div0.querySelector('[data-tab]');
   if (tab === 'email') return emailSettingsView(el);
+  if (tab === 'system') return systemView(el);
   const admins = await api('/admin/admins');
   const div = document.createElement('div');
   el.replaceChildren(div);
@@ -1083,4 +1084,145 @@ async function settingsPage(tab) {
       await api(`/admin/admins/${id}`, { method: 'DELETE' }); toast('Removed'); settingsPage('staff');
     },
   });
+}
+
+// --------------------------------------------------------------- settings → system & storage
+
+const bytes = (n) => {
+  if (n == null) return 'unknown';
+  if (n < 1024) return `${n} B`;
+  const u = ['KB', 'MB', 'GB'];
+  let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+  return `${n < 10 ? n.toFixed(2) : n < 100 ? n.toFixed(1) : Math.round(n)} ${u[i]}`;
+};
+const pct = (a, b) => (a == null || !b ? null : (a / b) * 100);
+const pctText = (p) => (p == null ? '—' : p < 0.01 ? 'less than 0.01%' : `${p < 1 ? p.toFixed(2) : p.toFixed(1)}%`);
+
+async function systemView(el) {
+  const s = await api('/admin/system');
+  const db = s.database;
+  const used = pct(db.size_bytes, db.limit_bytes);
+  const div = document.createElement('div');
+  div.innerHTML = `
+    <div class="grid sys-grid">
+      <section class="card">
+        <h2>Database storage</h2>
+        <div class="sys-big">${bytes(db.size_bytes)} <span class="muted">of ${bytes(db.limit_bytes)}</span></div>
+        <div class="meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${used == null ? 0 : used.toFixed(2)}"><span data-meter></span></div>
+        <p class="small muted">${pctText(used)} of the free plan's ${bytes(db.limit_bytes)} limit per database. Your Cloudflare account can hold
+          ${bytes(db.account_limit_bytes)} across all D1 databases. Statement PDFs aren't stored: they're built from the data each time
+          they're opened or emailed, so they take no space.</p>
+        <dl class="kv small">
+          <dt>Total records</dt><dd>${db.total_rows.toLocaleString()}</dd>
+          <dt>Free plan daily limits</dt><dd>${db.rows_read_per_day.toLocaleString()} rows read · ${db.rows_written_per_day.toLocaleString()} rows written</dd>
+        </dl>
+      </section>
+      <section class="card">
+        <h2>Records</h2>
+        <table class="plain small"><tbody>
+          ${db.tables.map((t) => `<tr><td>${esc(t.label)}</td><td class="num">${t.rows.toLocaleString()}</td></tr>`).join('')}
+        </tbody></table>
+      </section>
+      <section class="card">
+        <h2>Server</h2>
+        <dl class="kv small">
+          <dt>Web address</dt><dd>${esc(s.server.host)}</dd>
+          <dt>Runtime</dt><dd>${esc(s.server.runtime)}</dd>
+          <dt>Data center</dt><dd>${esc(s.server.data_center || '—')}${s.server.location ? ` <span class="muted">(you're connecting from ${esc(s.server.location)})</span>` : ''}</dd>
+          <dt>Database served by</dt><dd>${esc(db.served_by || '—')}</dd>
+          <dt>Database response</dt><dd>${db.query_ms} ms</dd>
+          <dt>Connection</dt><dd>${esc([s.server.http, s.server.tls].filter(Boolean).join(' · ') || '—')}</dd>
+          <dt>Database version</dt><dd>${esc(db.schema_version || '—')}${db.schema_updated_at ? ` <span class="muted">(updated ${esc(dateTime(db.schema_updated_at))})</span>` : ''}</dd>
+          <dt>Signed-in sessions</dt><dd>${s.server.active_sessions}</dd>
+          <dt>Emails sent this month</dt><dd>${s.server.emails_this_month}</dd>
+          <dt>Server time</dt><dd>${esc(new Date(s.server.time).toLocaleString())}</dd>
+        </dl>
+      </section>
+      <section class="card">
+        <h2>What the app runs on</h2>
+        <dl class="kv small">${s.stack.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>
+      </section>
+      <section class="card sys-wide">
+        <h2>Back up the database</h2>
+        <p class="small">Downloads every table (properties, units, tenants, utilities, billing batches, statements, settings and staff)
+          as one file. Keep it somewhere safe. It contains residents' personal details.</p>
+        <ul class="small">
+          <li><b>SQL file</b>: can be loaded back into a Cloudflare D1 database (create the database, apply the files in
+            <code>migrations/</code>, then <code>npx wrangler d1 execute &lt;database&gt; --remote --file=backup.sql</code>).</li>
+          <li><b>JSON file</b>: easy to open in other tools, or to keep as a readable archive.</li>
+        </ul>
+        <label class="check small"><input type="checkbox" data-secrets> Include passwords (hashed staff and resident passwords, and the SMTP password).
+          Leave this off unless you need a full restore. Without it, staff accounts are left out (after a restore you create a new staff
+          login on the first-time setup screen) and residents activate their portal account again.</label>
+        <div class="row mt">
+          <button class="primary" data-action="backup" data-format="sql">${ICONS.download}<span>Download SQL backup</span></button>
+          <button data-action="backup" data-format="json">${ICONS.download}<span>Download JSON backup</span></button>
+          <span class="small muted" data-progress></span>
+        </div>
+      </section>
+    </div>`;
+  el.replaceChildren(div);
+  div.querySelector('[data-meter]').style.width = `${Math.max(used || 0, 0.5)}%`;
+  let busy = false;
+  onActions(div, {
+    backup: async ({ format }) => {
+      if (busy) return;
+      busy = true;
+      const progress = div.querySelector('[data-progress]');
+      const buttons = div.querySelectorAll('[data-action=backup]');
+      buttons.forEach((b) => (b.disabled = true));
+      try {
+        const secrets = div.querySelector('[data-secrets]').checked;
+        const data = {};
+        for (const table of s.backup_tables) {
+          data[table] = [];
+          let offset = 0;
+          while (offset !== null) {
+            progress.textContent = `Reading ${table} (${data[table].length})…`;
+            const page = await api(`/admin/system/backup?table=${table}&offset=${offset}${secrets ? '&secrets=1' : ''}`);
+            data[table].push(...page.rows);
+            offset = page.next;
+          }
+        }
+        const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+        const info = { app: 'RUBS utility billing', created_at: new Date().toISOString(), database_version: db.schema_version, includes_passwords: secrets };
+        const text = format === 'sql' ? backupSql(data, info) : JSON.stringify({ ...info, tables: data }, null, 1);
+        const blob = new Blob([text], { type: format === 'sql' ? 'application/sql' : 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `rubs-backup-${stamp}.${format}`;
+        document.body.append(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+        const total = Object.values(data).reduce((t, r) => t + r.length, 0);
+        progress.textContent = `Downloaded ${total.toLocaleString()} records (${bytes(blob.size)}).`;
+        toast('Backup downloaded');
+      } catch (e) {
+        progress.textContent = '';
+        throw e;
+      } finally {
+        busy = false;
+        buttons.forEach((b) => (b.disabled = false));
+      }
+    },
+  });
+}
+
+// Data-only SQL dump for a database that already has the schema (the migrations).
+function backupSql(data, info) {
+  const val = (v) => (v === null || v === undefined ? 'NULL' : typeof v === 'number' ? String(v) : `'${String(v).replace(/'/g, "''")}'`);
+  const out = [
+    `-- RUBS utility billing backup, ${info.created_at}`,
+    `-- Database version: ${info.database_version || 'unknown'}. Passwords included: ${info.includes_passwords ? 'yes' : 'no'}`,
+    '-- Restore into a database that has the migrations applied (data only, no table definitions).',
+    'PRAGMA defer_foreign_keys = true;',
+  ];
+  for (const [table, rows] of Object.entries(data)) {
+    out.push('', `-- ${table}: ${rows.length} rows`);
+    for (const r of rows) {
+      const cols = Object.keys(r);
+      out.push(`INSERT OR REPLACE INTO ${table} (${cols.join(', ')}) VALUES (${cols.map((c) => val(r[c])).join(', ')});`);
+    }
+  }
+  return out.join('\n') + '\n';
 }

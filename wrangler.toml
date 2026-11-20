@@ -6,6 +6,5 @@ pages_build_output_dir = "public"
 [[d1_databases]]
 binding = "DB"
 database_name = "rubs-billing-db"
-# Replace with the ID printed by: npx wrangler d1 create rubs-billing-db
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "7ddf3801-eb2b-4aac-9a2f-a37314a942a0"
 migrations_dir = "migrations"

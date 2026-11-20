@@ -101,6 +101,8 @@ const RESOURCES = {
       w_occupants: ['num', 'Occupants weight'], w_equal: ['num', 'Equal split weight'],
       vacancy_mode: [['owner', 'occupied'], 'Vacancy handling'], vacant_occupants: ['num', 'Vacant unit occupant factor'],
       admin_fee_cents: ['int', 'Admin fee'], tax_pct: ['num', 'Tax %'], sort_order: ['int', 'Order on statement'],
+      statement_label: ['text', 'Show on statement as'], charge_method: [['rubs', 'flat'], 'How it is charged'],
+      flat_amount_cents: ['int', 'Fixed amount'], flat_prorate: ['bool', 'Prorate by days'],
       active: ['bool', 'Active'], notes: ['text', 'Notes'],
     },
     list: `SELECT pu.*, p.name AS property_name FROM property_utilities pu
@@ -110,6 +112,8 @@ const RESOURCES = {
     order: 'p.name, pu.sort_order, pu.id',
     validate: (r) => {
       if (r.tax_pct != null && (r.tax_pct < 0 || r.tax_pct > 100)) throw new HttpError(400, 'Tax % must be between 0 and 100');
+      if (r.charge_method === 'flat' && !(r.flat_amount_cents > 0)) throw new HttpError(400, 'Enter the fixed amount charged to each resident');
+      if (r.flat_amount_cents != null && r.flat_amount_cents < 0) throw new HttpError(400, 'Fixed amount cannot be negative');
       if (r.recovery_pct != null && (r.recovery_pct < 0 || r.recovery_pct > 100)) throw new HttpError(400, 'Recovery % must be between 0 and 100');
       for (const k of ['w_sqft', 'w_bedrooms', 'w_occupants', 'w_equal']) {
         if (r[k] != null && r[k] < 0) throw new HttpError(400, 'Weights cannot be negative');
@@ -168,6 +172,9 @@ async function createResource(db, name, input) {
     data.vacant_occupants ??= 1;
     data.admin_fee_cents ??= 0;
     data.tax_pct ??= 0;
+    data.charge_method ??= 'rubs';
+    data.flat_amount_cents ??= 0;
+    data.flat_prorate ??= 1;
     data.active ??= 1;
     for (const k of ['w_sqft', 'w_bedrooms', 'w_occupants', 'w_equal']) data[k] ??= 0;
     if (data.sort_order === null) {
@@ -195,7 +202,7 @@ async function updateResource(db, name, id, input) {
   const data = cleanInput(res, input, true);
   // Validate cross-field rules against the merged record.
   res.validate?.({ ...existing, ...data });
-  for (const k of ['sqft', 'bedrooms', 'bathrooms', 'occupants', 'recovery_pct', 'w_sqft', 'w_bedrooms', 'w_occupants', 'w_equal', 'vacant_occupants', 'admin_fee_cents', 'tax_pct', 'sort_order', 'active']) {
+  for (const k of ['sqft', 'bedrooms', 'bathrooms', 'occupants', 'recovery_pct', 'w_sqft', 'w_bedrooms', 'w_occupants', 'w_equal', 'vacant_occupants', 'admin_fee_cents', 'tax_pct', 'sort_order', 'flat_amount_cents', 'active']) {
     if (k in data && data[k] === null) data[k] = 0;
   }
   if ('recovery_pct' in input && blank(input.recovery_pct)) data.recovery_pct = 100;

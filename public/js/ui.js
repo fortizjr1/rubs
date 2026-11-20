@@ -80,7 +80,7 @@ export function confirmBox(message, okLabel = 'Delete') {
 }
 
 function fieldHtml(f, value) {
-  if (f.type === 'heading') return `<h3 class="full form-heading">${esc(f.label)}</h3>${f.help ? `<p class="full muted small m0">${esc(f.help)}</p>` : ''}`;
+  if (f.type === 'heading') return `<h3 class="full form-heading" ${f.group ? `data-group="${f.group}"` : ''}>${esc(f.label)}</h3>${f.help ? `<p class="full muted small m0" ${f.group ? `data-group="${f.group}"` : ''}>${esc(f.help)}</p>` : ''}`;
   const id = 'f_' + f.name;
   const req = f.required ? 'required' : '';
   let input;
@@ -100,8 +100,16 @@ function fieldHtml(f, value) {
     input = `<input id="${id}" name="${f.name}" type="${type}" ${step ? `step="${step}"` : ''} ${f.min !== undefined ? `min="${f.min}"` : ''}
       value="${esc(v)}" ${req} ${f.placeholder ? `placeholder="${esc(f.placeholder)}"` : ''} ${f.autocomplete ? `autocomplete="${f.autocomplete}"` : ''}>`;
   }
-  return `<div class="field ${f.full ? 'full' : ''}"><label for="${id}">${esc(f.label)}${f.required ? ' *' : ''}</label>${input}
+  return `<div class="field ${f.full ? 'full' : ''}" ${f.group ? `data-group="${f.group}"` : ''}><label for="${id}">${esc(f.label)}${f.required ? ' *' : ''}</label>${input}
     ${f.help ? `<div class="help">${f.help}</div>` : ''}</div>`;
+}
+
+/** Shows only the form parts whose data-group matches the current value of a select (e.g. charge type). */
+export function toggleGroups(form, selectName) {
+  const sel = form.elements[selectName];
+  const apply = () => form.querySelectorAll('[data-group]').forEach((el) => { el.hidden = el.dataset.group !== sel.value; });
+  sel.addEventListener('change', apply);
+  apply();
 }
 
 export function readForm(form, fields) {

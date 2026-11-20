@@ -26,6 +26,15 @@ export const DEFAULT_TEXT = {
   footer: 'Utilities are allocated to residents under the ratio utility billing method set out in your lease. This is not a bill from the utility company.',
 };
 
+// Default "Questions?" text that only mentions the contact details the property actually has.
+function defaultQuestions(p) {
+  const contact = p.phone && p.email ? `Call the office at ${p.phone} or email ${p.email}.`
+    : p.phone ? `Call the office at ${p.phone}.`
+    : p.email ? `Email the office at ${p.email}.`
+    : 'Contact the leasing office.';
+  return `${contact} Please report any change in the number of occupants in your apartment.`;
+}
+
 export function fillTemplate(text, vars) {
   return String(text || '').replace(/\{(\w+)\}/g, (m, k) => (vars[k] !== undefined && vars[k] !== null ? String(vars[k]) : ''));
 }
@@ -104,7 +113,7 @@ function drawStatement(page, s) {
 
   // Questions box
   y += 28;
-  const qLines = wrapText(fillTemplate(p.questions_text || DEFAULT_TEXT.questions, vars), 8.5, R - L - 40);
+  const qLines = wrapText(p.questions_text ? fillTemplate(p.questions_text, vars) : defaultQuestions(p), 8.5, R - L - 40);
   const boxH = 30 + qLines.length * 12;
   page.rect(L, y, R - L, boxH, GRAY_BG).rect(L, y, 3.5, boxH, ORANGE);
   page.text('Questions?', L + 14, y + 16, { size: 9, weight: 'bold', color: TEXT });

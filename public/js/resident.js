@@ -6,10 +6,13 @@ const BASIS = { sqft: 'square footage', bedrooms: 'bedrooms', occupants: 'number
 const pdfUrl = (st) => `/api/resident/statements/${st.id}/pdf`;
 
 function howCalculated(st) {
-  return st.charges.map((c) => `<div class="how-item"><b>${esc(c.utility_name)}</b>: the property's bill was ${money(c.bill_total_cents)}.
+  return st.charges.map((c) => (c.detail?.method === 'flat'
+    ? `<div class="how-item"><b>${esc(c.utility_name)}</b>: fixed charge of ${money(c.detail.amount_cents)} per billing period${c.detail.prorate && c.days < c.period_days
+      ? `, prorated for the ${c.days} of ${c.period_days} days you lived there → ${money(c.share_cents)}` : ''}.${c.tax_cents ? ` Tax: ${money(c.tax_cents)}.` : ''}</div>`
+    : `<div class="how-item"><b>${esc(c.utility_name)}</b>: the property's bill was ${money(c.bill_total_cents)}.
     ${c.detail ? `${c.detail.recovery_pct}% of it is shared by residents.` : ''} You were billed for ${c.days} of ${c.period_days} days.
     ${(c.detail?.bases || []).map((d) => `${d.weight_pct}% is split by ${BASIS[d.basis]}: your factor ${d.factor} × ${d.days} days = ${d.ratio_pct}% of that part → ${money(d.share_cents)}.`).join(' ')}
-    ${c.tax_cents ? `Tax: ${money(c.tax_cents)}.` : ''}</div>`).join('');
+    ${c.tax_cents ? `Tax: ${money(c.tax_cents)}.` : ''}</div>`)).join('');
 }
 
 function statementCard(st) {

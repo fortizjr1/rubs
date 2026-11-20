@@ -290,3 +290,4 @@ button.ghost:hover { background: rgba(255,255,255,.1); }
 }
 .due .due-amount.none { font-size: 1.6rem; }
 .due-disclaimer { flex-basis: 100%; margin: .25rem 0 0; padding-top: .9rem; border-top: 1px solid rgba(255,255,255,.15); font-size: .85rem; color: #c9d8e4; position: relative; z-index: 1; }
+.statement-preview ul { margin: .5rem 0; padding-left: 1.2rem; } .statement-preview li { margin: .2rem 0; }

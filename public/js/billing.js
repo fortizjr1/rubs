@@ -8,6 +8,15 @@ const propertyLabel = (p) => (p.active ? p.name : `${p.name} (inactive)`);
 const statusBadge = (s) => `<span class="badge ${esc(s)}">${esc(s === 'finalized' ? 'finalized' : s)}</span>`;
 const pct = (n) => `${Math.round(Number(n) * 100) / 100}%`;
 
+const lineLabel = (u) => (u.statement_label || '').trim() || u.utility_name;
+
+// Short description of how a utility or charge is billed.
+function chargeRule(u) {
+  const tax = Number(u.tax_pct) ? ` · +${pct(u.tax_pct)} tax` : '';
+  if (u.charge_method === 'flat') return `Fixed ${money(u.flat_amount_cents)} per resident${Number(u.flat_prorate) ? ', prorated by days' : ''}${tax}`;
+  return `${pct(u.recovery_pct)} to residents · ${splitRule(u)}${tax}`;
+}
+
 function splitRule(u) {
   const parts = [['w_sqft', 'sq ft'], ['w_bedrooms', 'bedrooms'], ['w_occupants', 'occupants'], ['w_equal', 'equal']]
     .filter(([k]) => Number(u[k]) > 0);
@@ -77,7 +86,7 @@ export async function runForm(values = {}) {
       <div class="field"><label>Utility account #</label><input name="vendor_account" value="${esc(values.vendor_account || '')}"></div>
       <div class="field"><label>Service period start *</label><input type="date" name="period_start" required value="${esc(values.period_start || '')}"></div>
       <div class="field"><label>Service period end *</label><input type="date" name="period_end" required value="${esc(values.period_end || '')}"></div>
-      <h3 class="full form-heading">Amounts on the bill</h3>
+      <h3 class="full form-heading">Charges for this batch</h3>
       <div class="full" data-lines></div>
       <h3 class="full form-heading">Statement dates</h3>
       <div class="field"><label>Statement date</label><input type="date" name="statement_date" value="${esc(values.statement_date || new Date().toISOString().slice(0, 10))}"></div>
@@ -98,15 +107,24 @@ export async function runForm(values = {}) {
     const pid = form.elements.property_id.value;
     const prop = props.find((p) => String(p.id) === String(pid));
     m.querySelector('[data-due-help]').textContent = `Leave blank for statement date + ${prop?.due_days ?? 28} days.`;
-    const utils = (await api(`/admin/utilities?property_id=${pid}`)).filter((u) => u.active || existing.has(u.id));
-    linesEl.innerHTML = utils.length
-      ? `<table class="lines"><thead><tr><th>Utility</th><th>Split rule</th><th class="num">Amount on bill</th></tr></thead><tbody>
-        ${utils.map((u) => `<tr><td><b>${esc(u.utility_name)}</b></td>
-          <td class="small muted">${pct(u.recovery_pct)} to residents · ${esc(splitRule(u))}${Number(u.tax_pct) ? ` · +${pct(u.tax_pct)} tax` : ''}</td>
+    const all = (await api(`/admin/utilities?property_id=${pid}`)).filter((u) => u.active || existing.has(u.id));
+    const split = all.filter((u) => u.charge_method !== 'flat');
+    const fixed = all.filter((u) => u.charge_method === 'flat');
+    const shownAs = (u) => (lineLabel(u) !== u.utility_name ? `<div class="muted small">On statement as "${esc(lineLabel(u))}"</div>` : '');
+    linesEl.innerHTML = !all.length
+      ? `<div class="error">This property has no utilities set up. Add them on the property's <a href="#/properties/${pid}/utilities" data-close>Utilities & fixed charges</a> tab first.</div>`
+      : `${split.length ? `<table class="lines"><thead><tr><th>Utility</th><th>Split rule</th><th class="num">Amount on bill</th></tr></thead><tbody>
+        ${split.map((u) => `<tr><td><b>${esc(u.utility_name)}</b>${shownAs(u)}</td>
+          <td class="small muted">${esc(chargeRule(u))}</td>
           <td class="num"><input type="number" step="0.01" min="0" data-util="${u.id}" placeholder="0.00"
             value="${existing.has(u.id) ? (existing.get(u.id) / 100).toFixed(2) : ''}"></td></tr>`).join('')}
-        </tbody><tfoot><tr><td colspan="2">Bill total</td><td class="num" data-total></td></tr></tfoot></table>`
-      : `<div class="error">This property has no utilities set up. Add them on the property's <a href="#/properties/${pid}/utilities" data-close>Utilities & split rules</a> tab first.</div>`;
+        </tbody><tfoot><tr><td colspan="2">Bill total</td><td class="num" data-total></td></tr></tfoot></table>` : ''}
+        ${fixed.length ? `<table class="lines mt-sm"><thead><tr><th>Fixed monthly charges <span class="muted small">(from the property's settings)</span></th><th>Amount</th><th class="num">Include</th></tr></thead><tbody>
+          ${fixed.map((u) => `<tr><td><b>${esc(u.utility_name)}</b>${shownAs(u)}</td>
+            <td class="small muted">${esc(chargeRule(u))}</td>
+            <td class="num"><input type="checkbox" data-fixed="${u.id}" ${!editing || existing.has(u.id) ? 'checked' : ''} aria-label="Include ${esc(u.utility_name)}"></td></tr>`).join('')}
+          </tbody></table>
+          <p class="small muted m0">These come from the property's <b>Fixed monthly charges</b> and are added to every resident automatically. Untick one only if it shouldn't be on this batch, e.g. it's already billed in another batch for the same period.</p>` : ''}`;
     const updateTotal = () => {
       const t = [...linesEl.querySelectorAll('[data-util]')].reduce((s, i) => s + Math.round(Number(i.value || 0) * 100), 0);
       const el = linesEl.querySelector('[data-total]');
@@ -127,8 +145,12 @@ export async function runForm(values = {}) {
     err.hidden = true;
     const data = Object.fromEntries([...new FormData(form)].map(([k, v]) => [k, v === '' ? null : v]));
     data.property_id = form.elements.property_id.value;
-    data.lines = [...linesEl.querySelectorAll('[data-util]')].filter((i) => i.value !== '')
-      .map((i) => ({ property_utility_id: Number(i.dataset.util), total_cents: Math.round(Number(i.value) * 100) }));
+    data.lines = [
+      ...[...linesEl.querySelectorAll('[data-util]')].filter((i) => i.value !== '')
+        .map((i) => ({ property_utility_id: Number(i.dataset.util), total_cents: Math.round(Number(i.value) * 100) })),
+      ...[...linesEl.querySelectorAll('[data-fixed]')].filter((c) => c.checked)
+        .map((c) => ({ property_utility_id: Number(c.dataset.fixed), include: true })),
+    ];
     let run;
     try {
       run = editing ? await api(`/admin/runs/${values.id}`, { method: 'PUT', body: data }) : await api('/admin/runs', { method: 'POST', body: data });
@@ -151,7 +173,8 @@ export async function runDetailPage(root, id) {
   const emailable = r.statements.filter((x) => x.email);
   const unsent = emailable.filter((x) => !x.emailed_at);
   const exported = r.statements.filter((x) => x.exported_at).length;
-  const utilNames = r.bills.map((b) => b.utility_name);
+  // Statement columns: one per combined statement line (e.g. "Water & Sewer"), in statement order.
+  const utilNames = [...new Set(r.bills.map((b) => b.statement_label || b.utility_name))];
   const lineAmt = (st, pred) => st.lines.filter(pred).reduce((t, l) => t + l.amount_cents, 0);
   const hasTax = r.statements.some((st) => st.lines.some((l) => l.kind === 'tax'));
   const hasFee = r.statements.some((st) => st.lines.some((l) => l.kind === 'fee'));
@@ -184,7 +207,7 @@ export async function runDetailPage(root, id) {
     ${s ? `<div class="grid cards mb">
       <div class="card stat"><div class="label">Utility bill total</div><div class="value">${money(s.city_total_cents)}</div></div>
       <div class="card stat"><div class="label">Billed to residents</div><div class="value">${money(s.billed_cents)}</div>
-        <div class="muted small">${money(s.resident_share_cents)} utilities${s.tax_cents ? ` + ${money(s.tax_cents)} tax` : ''}${s.fee_cents ? ` + ${money(s.fee_cents)} fees` : ''}</div></div>
+        <div class="muted small">${money((s.rubs_share_cents ?? s.resident_share_cents))} utilities${s.fixed_cents ? ` + ${money(s.fixed_cents)} fixed charges` : ''}${s.tax_cents ? ` + ${money(s.tax_cents)} tax` : ''}${s.fee_cents ? ` + ${money(s.fee_cents)} fees` : ''}</div></div>
       <div class="card stat"><div class="label">Owner cost</div><div class="value">${money(s.owner_cost_cents)}</div>
         <div class="muted small">${money(s.common_area_cents)} common area + ${money(s.vacancy_cents)} vacant units</div></div>
       <div class="card stat"><div class="label">Statements</div><div class="value">${s.statements}</div>
@@ -194,11 +217,11 @@ export async function runDetailPage(root, id) {
     ${table({
       columns: [
         { label: 'Utility', value: (b) => `<b>${esc(b.utility_name)}</b><div class="muted small">${esc(b.rm_charge_code || '')}</div>` },
-        { label: 'Split rule', value: (b) => `${pct(b.recovery_pct)} to residents · ${esc(splitRule(b))}${Number(b.tax_pct) ? ` · +${pct(b.tax_pct)} tax` : ''}<div class="muted small">Vacant units: ${b.vacancy_mode === 'owner' ? 'owner pays' : 'split among occupied'}</div>` },
-        { label: 'Bill amount', value: (b) => money(b.total_cents), cls: 'num' },
+        { label: 'How it is charged', value: (b) => `${esc(chargeRule(b))}${b.charge_method === 'flat' ? '' : `<div class="muted small">Vacant units: ${b.vacancy_mode === 'owner' ? 'owner pays' : 'split among occupied'}</div>`}${b.statement_label !== b.utility_name ? `<div class="muted small">On statement as "${esc(b.statement_label)}"</div>` : ''}` },
+        { label: 'Bill amount', value: (b) => (b.charge_method === 'flat' ? '<span class="muted">fixed</span>' : money(b.total_cents)), cls: 'num' },
         { label: 'Residents pay', value: (b) => (b.summary ? money(b.summary.resident_share_cents) : '—'), cls: 'num' },
-        { label: 'Vacant (owner)', value: (b) => (b.summary ? money(b.summary.vacancy_cents) : '—'), cls: 'num' },
-        { label: 'Common area (owner)', value: (b) => (b.summary ? money(b.summary.common_area_cents) : '—'), cls: 'num' },
+        { label: 'Vacant (owner)', value: (b) => (b.summary && b.charge_method !== 'flat' ? money(b.summary.vacancy_cents) : '—'), cls: 'num' },
+        { label: 'Common area (owner)', value: (b) => (b.summary && b.charge_method !== 'flat' ? money(b.summary.common_area_cents) : '—'), cls: 'num' },
       ],
       rows: r.bills,
     })}

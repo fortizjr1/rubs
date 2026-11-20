@@ -82,12 +82,15 @@ In Cloudflare go to **Security → WAF → Rate limiting rules** (the free plan 
 1. **Settings → Company & email**: enter the company name and your SMTP details, then click **Send test email**.
    For Maileroo, copy the SMTP credentials of your sending domain (server `smtp.maileroo.com`, port 465 with SSL, or 587 with STARTTLS). The From email must use that domain.
 2. **Properties → Add property**: fill in the address, office phone and email (printed on statements), days until due, and the Rent Manager property code.
-3. On the property's **Utilities & split rules** tab, add each utility (Water, Sewer…) with its recovery %, split weights, tax % and RM charge code.
+3. On the property's **Utilities & fixed charges** tab, set up two kinds of charges:
+   - **Utility bill (split with RUBS)**: the utilities on the utility company's bill, usually Water and Sewer. Set the recovery %, split weights, tax % and RM charge code. You enter the bill amounts in each batch.
+   - **Fixed monthly charges**: Trash, Pest Control, Internet, Cable and so on, with an amount per resident (optionally prorated by days lived there). Every batch adds them automatically.
+   - **Show on statement as** combines charges into one statement line and one Rent Manager row, e.g. Water + Sewer → "Water & Sewer", or Internet + Pest Control + Trash → "Amenity Fee". The combined line uses the RM charge code of its first charge.
 4. On the property's **Units** tab, click **Import CSV** to load every unit, including vacant ones, with its square footage, bedrooms and bathrooms (see `public/unit-import-template.csv`). Re-importing updates existing units, and blank cells keep their current values.
 5. **Tenants → Import CSV** (see `public/tenant-import-template.csv`).
 
 **Every billing cycle**
-1. **Billing → New billing batch**: pick the property, enter the service period and the amount for each utility from the bill, then **Save & calculate**.
+1. **Billing → New billing batch**: pick the property, enter the service period and the amount for each utility from the bill, then **Save & calculate**. The property's fixed monthly charges are included automatically; untick one only if it's already billed in another batch for the same period.
 2. Review the statements (click **PDF** to preview any one), then click **Finalize statements**.
 3. Click **Email statements**. For residents without an email, use **Download all PDFs** and print theirs.
 4. Click **Export CSV for Rent Manager** and import the file into Rent Manager.

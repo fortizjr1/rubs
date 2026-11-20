@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { calculateRubs, occupiedDays, periodLength } from '../lib/rubs.js';
+import { calculateRubs, calculateFlat, occupiedDays, periodLength } from '../lib/rubs.js';
 
 const units = [
   { id: 1, unit_number: '101', sqft: 1000, bedrooms: 2 },
@@ -97,4 +97,19 @@ test('utility tax is added on top of the share (10% on $7.24 = $0.72)', () => {
   assert.equal(r.lines[0].tax_cents, 72);
   assert.equal(r.lines[0].amount_cents, 796);
   assert.equal(r.summary.tax_cents, 72);
+});
+
+test('fixed amount per resident, prorated by days, with tax', () => {
+  const tenants = [
+    { id: 10, unit_id: 1, occupants: 1, ...fullYear },
+    { id: 11, unit_id: 2, occupants: 1, move_in: '2026-10-20', move_out: null },
+    { id: 12, unit_id: 3, occupants: 1, move_in: '2026-12-01', move_out: null },
+  ];
+  const r = calculateFlat({ periodStart: '2026-10-06', periodEnd: '2026-11-03', units, tenants,
+    config: { flat_amount_cents: 1500, flat_prorate: 1, tax_pct: 7, day_count: 'meter' } });
+  assert.deepEqual(r.lines.map((l) => [l.tenant_id, l.days, l.share_cents, l.tax_cents]), [[10, 28, 1500, 105], [11, 14, 750, 53]]);
+  const noProrate = calculateFlat({ periodStart: '2026-10-06', periodEnd: '2026-11-03', units, tenants,
+    config: { flat_amount_cents: 1500, flat_prorate: 0, day_count: 'meter' } });
+  assert.deepEqual(noProrate.lines.map((l) => l.share_cents), [1500, 1500]);
+  assert.throws(() => calculateFlat({ periodStart: '2026-10-06', periodEnd: '2026-11-03', units, tenants, config: { flat_amount_cents: 0 } }), /fixed amount/);
 });

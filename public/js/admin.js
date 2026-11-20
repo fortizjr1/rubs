@@ -1,7 +1,7 @@
 // Admin app: dashboard, properties, units, tenants, utilities, billing, exports, settings.
 import {
   api, esc, money, date, fullName, toast, modal, closeModal, confirmBox, formModal, table, parseCSV, onActions, bindSelection,
-  ICONS, initials,
+  ICONS, initials, toggleGroups,
 } from './ui.js';
 import { runsTable, runsView, runForm, runDetailPage, emailSettingsView } from './billing.js';
 import { DEFAULT_TEXT } from './shared/statement-pdf.js';
@@ -264,7 +264,7 @@ function editProperty(p, after) {
 
 async function propertyDetail(id, tab) {
   const p = await api(`/admin/properties/${id}`);
-  const tabs = [['units', 'Units'], ['tenants', 'Tenants'], ['utilities', 'Utilities & split rules'], ['billing', 'Billing']];
+  const tabs = [['units', 'Units'], ['tenants', 'Tenants'], ['utilities', 'Utilities & fixed charges'], ['billing', 'Billing']];
   const div = mount(`<div class="topbar"><div><a href="#/properties" class="small">← Properties</a><h1>${esc(p.name)}</h1>
       <div class="muted small">${esc([p.address, p.city, p.state, p.zip].filter(Boolean).join(', '))}
       ${p.rm_property_code ? ` · RM code: ${esc(p.rm_property_code)}` : ''}</div></div>
@@ -733,28 +733,45 @@ function unitImportModal(propertyId, after) {
 
 // --------------------------------------------------------------- utilities (split rules)
 
-const UTILITY_HELP = `<div class="notice small"><b>How the split works (RUBS):</b> First, <b>Recovery %</b> of the bill is passed to residents.
+const UTILITY_HELP = `<div class="notice small"><b>Two kinds of charges:</b> utilities <b>split from a bill</b> using RUBS (water, sewer, trash…),
+  and <b>fixed amounts per resident</b> (internet, cable, pest control…). Use "Show on statement as" to combine several into one line,
+  e.g. Water + Sewer → "Water & Sewer", or Internet + Pest Control + Trash → "Amenity Fee".<br><b>How the split works (RUBS):</b> First, <b>Recovery %</b> of the bill is passed to residents.
   The rest (common areas, office, pool, etc.) is paid by the owner. That amount is then divided using the <b>weights</b>, for example
   100 for square footage only, or 50 sq ft + 50 occupants. Each resident's share = their factor × days occupied ÷ the total for the property.
   <br><b>Vacancy handling:</b> "Owner absorbs vacant units" counts vacant unit-days, so the owner pays the vacant share (recommended).
   "Split among occupied units only" divides 100% of the billable amount among residents.</div>`;
 
 const UTILITY_FIELDS = [
-  { name: 'utility_name', label: 'Utility', required: true, placeholder: 'Water, Sewer, Trash, Gas, Electric…' },
-  { name: 'rm_charge_code', label: 'Rent Manager charge code', help: 'The charge type in Rent Manager, e.g. WATER' },
-  { name: 'recovery_pct', label: 'Recovery % billed to residents', type: 'number', min: 0, help: 'Example: 85 means 15% is deducted for common areas' },
-  { name: 'tax_pct', label: 'Tax % added to residents\' share', type: 'number', min: 0, help: 'e.g. 10 for a 10% utility tax on water. Use 0 for none.' },
-  { name: 'w_sqft', label: 'Weight: square footage', type: 'number', min: 0 },
-  { name: 'w_bedrooms', label: 'Weight: bedrooms', type: 'number', min: 0 },
-  { name: 'w_occupants', label: 'Weight: number of occupants', type: 'number', min: 0 },
-  { name: 'w_equal', label: 'Weight: equal per unit', type: 'number', min: 0 },
-  { name: 'vacancy_mode', label: 'Vacancy handling', type: 'select', required: true,
+  { name: 'utility_name', label: 'Utility / charge', required: true, placeholder: 'Water, Sewer, Trash, Pest Control, Internet…' },
+  { name: 'charge_method', label: 'How it is charged', type: 'select', required: true,
+    options: [['rubs', 'Split a utility bill using RUBS'], ['flat', 'Fixed amount per resident']],
+    help: 'Use "Fixed amount" for flat monthly charges like Internet, Cable or Pest Control that are not split from a bill.' },
+  { name: 'statement_label', label: 'Show on statement as', placeholder: 'e.g. Water & Sewer, or Amenity Fee',
+    help: 'Charges with the same name here are combined into one line on the statement and in the Rent Manager export. Leave blank to use the utility name.' },
+  { name: 'rm_charge_code', label: 'Rent Manager charge code', help: 'For a combined line, the code of the first charge in the group (by order) is used.' },
+  { type: 'heading', label: 'Fixed amount', group: 'flat' },
+  { name: 'flat_amount_cents', label: 'Amount per resident, per billing period ($)', type: 'money', min: 0, group: 'flat' },
+  { name: 'flat_prorate', label: 'Prorate by days lived there (move-ins and move-outs)', type: 'checkbox', group: 'flat' },
+  { type: 'heading', label: 'RUBS split', group: 'rubs' },
+  { name: 'recovery_pct', label: 'Recovery % billed to residents', type: 'number', min: 0, help: 'Example: 85 means 15% is deducted for common areas', group: 'rubs' },
+  { name: 'vacancy_mode', label: 'Vacancy handling', type: 'select', required: true, group: 'rubs',
     options: [['owner', 'Owner absorbs vacant units'], ['occupied', 'Split among occupied units only']] },
-  { name: 'vacant_occupants', label: 'Occupants assumed for vacant units', type: 'number', min: 0, help: 'Only used with the occupants weight and "owner absorbs"' },
+  { name: 'w_sqft', label: 'Weight: square footage', type: 'number', min: 0, group: 'rubs' },
+  { name: 'w_bedrooms', label: 'Weight: bedrooms', type: 'number', min: 0, group: 'rubs' },
+  { name: 'w_occupants', label: 'Weight: number of occupants', type: 'number', min: 0, group: 'rubs' },
+  { name: 'w_equal', label: 'Weight: equal per unit', type: 'number', min: 0, group: 'rubs' },
+  { name: 'vacant_occupants', label: 'Occupants assumed for vacant units', type: 'number', min: 0, help: 'Only used with the occupants weight and "owner absorbs"', group: 'rubs' },
+  { type: 'heading', label: 'Other' },
+  { name: 'tax_pct', label: 'Tax % added to residents\' charge', type: 'number', min: 0, help: 'e.g. 10 for a 10% utility tax on water. Use 0 for none.' },
   { name: 'sort_order', label: 'Order on statement', type: 'number', help: 'Lower numbers are listed first.' },
   { name: 'active', label: 'Active', type: 'checkbox' },
   { name: 'notes', label: 'Notes', type: 'textarea', full: true },
 ];
+
+function describeCharge(u) {
+  if (u.charge_method === 'flat') return `Fixed ${money(u.flat_amount_cents)} per resident${u.flat_prorate ? ', prorated by days' : ''}`;
+  return `${u.recovery_pct}% to residents · ${describeWeights(u)}`;
+}
 
 function describeWeights(u) {
   const parts = [['w_sqft', 'sq ft'], ['w_bedrooms', 'bedrooms'], ['w_occupants', 'occupants'], ['w_equal', 'equal']]
@@ -766,32 +783,79 @@ function describeWeights(u) {
 
 async function utilitiesView(el, { propertyId }) {
   const utils = await getUtilities(propertyId);
+  const lineOf = (u) => (u.statement_label || '').trim() || u.utility_name;
+  // Statement lines in the order they will print, with the charges combined into each.
+  const lines = [];
+  for (const u of utils.filter((x) => x.active)) {
+    const l = lines.find((x) => x.label.toLowerCase() === lineOf(u).toLowerCase());
+    if (l) l.utils.push(u); else lines.push({ label: lineOf(u), utils: [u] });
+  }
+  const mixedCodes = lines.filter((l) => l.utils.length > 1 && new Set(l.utils.map((u) => u.rm_charge_code || '')).size > 1);
+  const split = utils.filter((u) => u.charge_method !== 'flat');
+  const fixed = utils.filter((u) => u.charge_method === 'flat');
+  const nameCell = (u) => esc(u.utility_name) + (u.active ? '' : ' <span class="badge">inactive</span>');
+  const lineCell = (u) => esc(lineOf(u)) + (lineOf(u) !== u.utility_name ? ' <span class="badge">combined</span>' : '');
+  const actions = (u) => `<button class="link" data-action="edit" data-id="${u.id}">Edit</button>
+    <button class="link danger" data-action="del" data-id="${u.id}">Delete</button>`;
   const div = document.createElement('div');
-  div.innerHTML = `${UTILITY_HELP}<div class="topbar"><div></div><button class="primary" data-action="add">+ Add utility</button></div>
-    ${table({
-      columns: [
-        { label: 'Utility', value: (u) => esc(u.utility_name) + (u.active ? '' : ' <span class="badge">inactive</span>') },
-        { label: 'RM charge code', value: 'rm_charge_code' },
-        { label: 'Recovery', value: (u) => `${u.recovery_pct}%`, cls: 'num' },
-        { label: 'Split by', value: describeWeights },
-        { label: 'Vacancy', value: (u) => (u.vacancy_mode === 'owner' ? 'Owner absorbs' : 'Occupied only') },
-        { label: 'Tax', value: (u) => (Number(u.tax_pct) ? `${u.tax_pct}%` : '—'), cls: 'num' },
-      ],
-      rows: utils,
-      actions: (u) => `<button class="link" data-action="edit" data-id="${u.id}">Edit</button>
-        <button class="link danger" data-action="del" data-id="${u.id}">Delete</button>`,
-      empty: 'No utilities set up. Add one for each utility you bill back (water, sewer, trash…).',
-    })}`;
+  div.innerHTML = `${lines.length ? `<div class="card mb statement-preview"><h3 class="m0">On the statement</h3>
+      <p class="small muted">How these charges will appear on each resident's statement (and as rows in the Rent Manager export):</p>
+      <ul>${lines.map((l) => `<li><b>${esc(l.label)}</b> <span class="muted small">· ${esc(l.utils[0].rm_charge_code || 'no charge code')}${l.utils.length > 1 ? ` · combines ${l.utils.map((u) => esc(u.utility_name)).join(' + ')}` : ''}</span></li>`).join('')}</ul>
+      ${mixedCodes.length ? `<div class="warn small">${mixedCodes.map((l) => `"${esc(l.label)}" combines charges with different Rent Manager codes. The combined line uses ${esc(l.utils[0].rm_charge_code || '(none)')}.`).join(' ')}</div>` : ''}
+    </div>` : ''}
+
+    <section class="mb">
+      <div class="topbar"><div><h2 class="m0">1. Utility bill (split with RUBS)</h2>
+        <div class="muted small">Utilities on the bill from the utility company, usually water and sewer. You enter the amounts in each billing batch.</div></div>
+        <button class="primary" data-action="addSplit">+ Add utility</button></div>
+      ${table({
+        columns: [
+          { label: 'Utility', value: nameCell },
+          { label: 'On statement as', value: lineCell },
+          { label: 'RM charge code', value: 'rm_charge_code' },
+          { label: 'Split rule', value: (u) => `${describeCharge(u)}<div class="muted small">Vacant units: ${u.vacancy_mode === 'owner' ? 'owner pays' : 'split among occupied'}</div>` },
+          { label: 'Tax', value: (u) => (Number(u.tax_pct) ? `${u.tax_pct}%` : '—'), cls: 'num' },
+          { label: 'Order', value: 'sort_order', cls: 'num' },
+        ],
+        rows: split, actions,
+        empty: 'No utilities yet. Add the utilities on your utility bill, e.g. Water and Sewer.',
+      })}
+    </section>
+
+    <section class="mb">
+      <div class="topbar"><div><h2 class="m0">2. Fixed monthly charges</h2>
+        <div class="muted small">Set the amount per resident here once, e.g. Trash, Pest Control, Internet or Cable. Every billing batch adds them automatically.</div></div>
+        <button class="primary" data-action="addFixed">+ Add fixed charge</button></div>
+      ${table({
+        columns: [
+          { label: 'Charge', value: nameCell },
+          { label: 'On statement as', value: lineCell },
+          { label: 'RM charge code', value: 'rm_charge_code' },
+          { label: 'Amount per resident', value: (u) => `<b>${money(u.flat_amount_cents)}</b><div class="muted small">${u.flat_prorate ? 'prorated by days lived there' : 'full amount, not prorated'}</div>`, cls: 'num' },
+          { label: 'Tax', value: (u) => (Number(u.tax_pct) ? `${u.tax_pct}%` : '—'), cls: 'num' },
+          { label: 'Order', value: 'sort_order', cls: 'num' },
+        ],
+        rows: fixed, actions,
+        empty: 'No fixed charges. Add flat monthly charges such as Trash, Pest Control, Internet or Cable.',
+      })}
+    </section>
+    <details class="hint"><summary>How the split and statement lines work</summary>${UTILITY_HELP}</details>`;
   el.replaceChildren(div);
   const reload = () => utilitiesView(el, { propertyId });
+  const openForm = (title, values, save) => {
+    const m = formModal({ title, fields: UTILITY_FIELDS, wide: true, values, onSubmit: save });
+    toggleGroups(m.querySelector('form'), 'charge_method');
+  };
+  const create = async (d) => { await api('/admin/utilities', { method: 'POST', body: { ...d, property_id: propertyId } }); toast('Saved'); reload(); };
   onActions(div, {
-    add: () => formModal({ title: 'Add utility', fields: UTILITY_FIELDS, wide: true,
-      values: { recovery_pct: 100, w_sqft: 100, vacancy_mode: 'owner', vacant_occupants: 1, active: true, tax_pct: 0 },
-      onSubmit: async (d) => { await api('/admin/utilities', { method: 'POST', body: { ...d, property_id: propertyId } }); toast('Utility added'); reload(); } }),
-    edit: ({ id }) => formModal({ title: 'Edit utility', fields: UTILITY_FIELDS, wide: true, values: utils.find((u) => u.id == id),
-      onSubmit: async (d) => { await api(`/admin/utilities/${id}`, { method: 'PUT', body: d }); toast('Saved'); reload(); } }),
+    addSplit: () => openForm('Add utility (from the utility bill)',
+      { charge_method: 'rubs', recovery_pct: 100, w_sqft: 100, vacancy_mode: 'owner', vacant_occupants: 1, active: true, tax_pct: 0, flat_prorate: true }, create),
+    addFixed: () => openForm('Add fixed monthly charge',
+      { charge_method: 'flat', recovery_pct: 100, vacancy_mode: 'owner', vacant_occupants: 1, active: true, tax_pct: 0, flat_prorate: true }, create),
+    edit: ({ id }) => openForm('Edit charge', utils.find((u) => u.id == id),
+      async (d) => { await api(`/admin/utilities/${id}`, { method: 'PUT', body: d }); toast('Saved'); reload(); }),
     del: async ({ id }) => {
-      if (!(await confirmBox('Delete this utility?'))) return;
+      if (!(await confirmBox('Delete this charge?'))) return;
       await api(`/admin/utilities/${id}`, { method: 'DELETE' }); toast('Deleted'); reload();
     },
   });

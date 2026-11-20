@@ -226,6 +226,7 @@ async function unitsView(el, { propertyId }) {
   const div = document.createElement('div');
   div.innerHTML = `<div class="topbar"><div class="muted">${units.length} units · ${totalSqft.toLocaleString()} total sq ft</div>
       <div class="row"><a class="btn" href="/api/admin/export/units.csv?property_id=${propertyId || ''}">Export CSV</a>
+      <button data-action="import">Import CSV</button>
       <button class="primary" data-action="add">+ Add unit</button></div></div>
     ${table({
       columns: [
@@ -238,11 +239,13 @@ async function unitsView(el, { propertyId }) {
       rows: units,
       actions: (u) => `<button class="link" data-action="edit" data-id="${u.id}">Edit</button>
         <button class="link danger" data-action="del" data-id="${u.id}">Delete</button>`,
-      empty: 'No units yet. Add units here, or import tenants and units will be created automatically.',
+      empty: 'No units yet. Click Import CSV to load all units at once (with square footage and bedrooms), or add them one at a time.',
     })}`;
   el.replaceChildren(div);
-  const reload = () => unitsView(el, { propertyId });
+  // Reload the whole property page so the Total / Occupied / Vacant boxes update too.
+  const reload = () => (propertyId ? window.dispatchEvent(new HashChangeEvent('hashchange')) : unitsView(el, { propertyId }));
   onActions(div, {
+    import: () => unitImportModal(propertyId, reload),
     add: () => formModal({ title: 'Add unit', fields, values: { property_id: propertyId },
       onSubmit: async (d) => { await api('/admin/units', { method: 'POST', body: d }); toast('Unit added'); reload(); } }),
     edit: ({ id }) => formModal({ title: 'Edit unit', fields, values: units.find((u) => u.id == id),
@@ -384,19 +387,20 @@ async function tenantsView(el, { propertyId, filters = {} }) {
   });
 }
 
-async function importModal(propertyId, after) {
+/**
+ * Shared CSV import window. Rows are parsed in the browser, previewed, then sent in chunks.
+ * opts: {title, help, endpoint, options: [{key, label, checked}], chunk, summary(total) -> text}
+ */
+async function csvImportModal(propertyId, after, opts) {
   const props = await getProperties();
-  const m = modal(`<h2>Import tenants from CSV</h2>
-    <div class="notice small">Columns are matched by name (case doesn't matter). Recognized: <b>Property, Unit, First Name, Last Name</b> (or <b>Name</b>),
-      <b>Email, Phone, Account Number, Address, Move In, Move Out, Occupants, Sq Ft, Bedrooms</b>.
-      Dates can be YYYY-MM-DD or MM/DD/YYYY. Tenants with an existing account number are updated instead of duplicated.
-      <a href="/tenant-import-template.csv" download>Download a template</a>.</div>
+  const m = modal(`<h2>${esc(opts.title)}</h2>
+    <div class="notice small">${opts.help}</div>
     <div class="error" hidden></div>
     <div class="form-grid">
       <div class="field full"><label>CSV file</label><input type="file" accept=".csv,text/csv" data-file></div>
       <div class="field"><label>Property (for rows without a Property column)</label>
         <select data-prop><option value="">—</option>${props.map((p) => `<option value="${p.id}" ${p.id == propertyId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
-      <div class="field"><label><input type="checkbox" data-create checked> Create units that don't exist yet</label>
+      <div class="field">${opts.options.map((o) => `<label><input type="checkbox" data-opt="${o.key}" ${o.checked ? 'checked' : ''}> ${esc(o.label)}</label>`).join('')}
         <label><input type="checkbox" data-skip> Skip rows with errors and import the rest</label></div>
     </div>
     <div data-preview></div>
@@ -418,25 +422,55 @@ async function importModal(propertyId, after) {
   go.addEventListener('click', async () => {
     go.disabled = true;
     err.hidden = true;
-    const total = { imported: 0, units_created: 0, errors: [] };
+    const total = { errors: [] };
+    const options = Object.fromEntries([...m.querySelectorAll('[data-opt]')].map((c) => [c.dataset.opt, c.checked]));
     try {
-      for (let i = 0; i < rows.length; i += 500) {
-        const r = await api('/admin/tenants/import', { method: 'POST', body: {
-          rows: rows.slice(i, i + 500), property_id: m.querySelector('[data-prop]').value || null,
-          create_units: m.querySelector('[data-create]').checked, skip_errors: m.querySelector('[data-skip]').checked,
+      for (let i = 0; i < rows.length; i += opts.chunk) {
+        const r = await api(opts.endpoint, { method: 'POST', body: {
+          rows: rows.slice(i, i + opts.chunk), property_id: m.querySelector('[data-prop]').value || null,
+          skip_errors: m.querySelector('[data-skip]').checked, ...options,
         } });
-        total.imported += r.imported;
-        total.units_created += r.units_created;
+        for (const [k, v] of Object.entries(r)) if (typeof v === 'number') total[k] = (total[k] || 0) + v;
         total.errors.push(...r.errors.map((x) => ({ ...x, line: x.line + i })));
       }
     } catch (e2) { err.textContent = e2.message; err.hidden = false; go.disabled = false; return; }
-    if (total.errors.length && !total.imported) {
+    const nothing = !Object.entries(total).some(([k, v]) => k !== 'errors' && v > 0);
+    if (total.errors.length && nothing) {
       err.innerHTML = `Nothing was imported. Fix these rows (or tick "Skip rows with errors"):<ul>${total.errors.slice(0, 50).map((x) => `<li>Line ${x.line}: ${esc(x.error)}</li>`).join('')}</ul>`;
       err.hidden = false; go.disabled = false; return;
     }
     closeModal();
-    toast(`Imported ${total.imported} tenants${total.units_created ? `, created ${total.units_created} units` : ''}${total.errors.length ? `, skipped ${total.errors.length} rows` : ''}`);
+    toast(opts.summary(total) + (total.errors.length ? `, skipped ${total.errors.length} rows with errors` : ''));
     after();
+  });
+}
+
+function importModal(propertyId, after) {
+  return csvImportModal(propertyId, after, {
+    title: 'Import tenants from CSV',
+    help: `Columns are matched by name (case doesn't matter). Recognized: <b>Property, Unit, First Name, Last Name</b> (or <b>Name</b>),
+      <b>Email, Phone, Account Number, Address, Move In, Move Out, Occupants, Sq Ft, Bedrooms</b>.
+      Dates can be YYYY-MM-DD or MM/DD/YYYY. Tenants with an existing account number are updated instead of duplicated.
+      <a href="/tenant-import-template.csv" download>Download a template</a>.`,
+    endpoint: '/admin/tenants/import',
+    chunk: 500,
+    options: [{ key: 'create_units', label: "Create units that don't exist yet", checked: true }],
+    summary: (t) => `Imported ${t.imported || 0} tenants${t.units_created ? `, created ${t.units_created} units` : ''}`,
+  });
+}
+
+function unitImportModal(propertyId, after) {
+  return csvImportModal(propertyId, after, {
+    title: 'Import units from CSV',
+    help: `One row per unit. Columns are matched by name (case doesn't matter): <b>Unit</b> (required), <b>Sq Ft</b>, <b>Bedrooms</b>,
+      <b>Bathrooms</b>, <b>Notes</b>, and <b>Property</b> (name or Rent Manager code) if the file covers several properties.
+      Numbers like "1,050" or "850 sq ft" are fine. A unit that already exists (same unit number) is updated, and blank cells keep the current value.
+      Include vacant units too, so the split rules can count them. <a href="/unit-import-template.csv" download>Download a template</a>.`,
+    endpoint: '/admin/units/import',
+    chunk: 1000,
+    options: [{ key: 'update_existing', label: 'Update units that already exist', checked: true }],
+    summary: (t) => [`Created ${t.created || 0} units`, t.updated ? `updated ${t.updated}` : '', t.unchanged ? `${t.unchanged} unchanged` : '',
+      t.skipped_existing ? `${t.skipped_existing} already existed (not changed)` : ''].filter(Boolean).join(', '),
   });
 }
 

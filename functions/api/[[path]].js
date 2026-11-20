@@ -260,6 +260,94 @@ function mapImportRow(raw) {
   return out;
 }
 
+// ---- unit import
+const UNIT_ALIASES = {
+  property: IMPORT_ALIASES.property,
+  unit_number: ['unit', 'unit number', 'unit_number', 'unit #', 'unit no', 'unit name', 'unit_name', 'unitname', 'unit id', 'apt', 'apt #', 'apartment'],
+  sqft: ['sqft', 'sq ft', 'sq. ft.', 'sq.ft.', 'square feet', 'square_feet', 'square footage', 'sf', 'size', 'unit size'],
+  bedrooms: ['bedrooms', 'bedroom', 'beds', 'bed', 'br', 'bd'],
+  bathrooms: ['bathrooms', 'bathroom', 'baths', 'bath', 'ba'],
+  notes: ['notes', 'note', 'comments', 'unit type', 'type', 'floorplan', 'floor plan'],
+};
+
+// Reads the number at the start of a cell: "1,050", "850 sq ft", "2 BR", "1.5".
+function leadingNumber(v, label) {
+  if (blank(v)) return null;
+  const m = /^\s*(\d[\d,]*(?:\.\d+)?|\.\d+)/.exec(String(v));
+  if (!m) throw new Error(`${label} "${v}" is not a number`);
+  return Number(m[1].replace(/,/g, ''));
+}
+
+// Creates units, or updates sqft/bedrooms/bathrooms of existing ones (matched by
+// property + unit number, ignoring case). Blank cells keep the existing value.
+async function importUnits(db, payload) {
+  const rows = Array.isArray(payload.rows) ? payload.rows : [];
+  if (!rows.length) throw new HttpError(400, 'No rows to import');
+  if (rows.length > 1000) throw new HttpError(400, 'Import at most 1000 rows per request');
+  const defaultPropertyId = payload.property_id ? Number(payload.property_id) : null;
+  const updateExisting = payload.update_existing !== false;
+
+  const props = (await db.prepare('SELECT id, name, rm_property_code FROM properties').all()).results;
+  const existing = (await db.prepare('SELECT id, property_id, unit_number, sqft, bedrooms, bathrooms, notes FROM units').all()).results;
+  const key = (pid, num) => `${pid}|${String(num).trim().toLowerCase()}`;
+  const byKey = new Map(existing.map((u) => [key(u.property_id, u.unit_number), u]));
+  const findProperty = (v) => {
+    const k = String(v).trim().toLowerCase();
+    return props.find((p) => String(p.id) === k || p.name.toLowerCase() === k || (p.rm_property_code || '').toLowerCase() === k);
+  };
+
+  const errors = [];
+  const stmts = [];
+  const seen = new Map();
+  const result = { created: 0, updated: 0, unchanged: 0, skipped_existing: 0 };
+  rows.forEach((raw, idx) => {
+    const line = idx + 2;
+    try {
+      const lower = {};
+      for (const [k, v] of Object.entries(raw)) lower[String(k).trim().toLowerCase()] = v;
+      const r = {};
+      for (const [field, aliases] of Object.entries(UNIT_ALIASES)) {
+        for (const a of aliases) if (!blank(lower[a])) { r[field] = String(lower[a]).trim(); break; }
+      }
+      const prop = r.property ? findProperty(r.property) : props.find((p) => p.id === defaultPropertyId);
+      if (!prop) throw new Error(r.property ? `property "${r.property}" not found` : 'no property given (add a Property column or pick a property)');
+      if (!r.unit_number) throw new Error('unit number is missing');
+      if (r.unit_number.length > 50) throw new Error('unit number is too long');
+      const k = key(prop.id, r.unit_number);
+      if (seen.has(k)) throw new Error(`unit ${r.unit_number} is listed twice (also on line ${seen.get(k)})`);
+      seen.set(k, line);
+      const sqft = leadingNumber(r.sqft, 'Sq ft');
+      const bedrooms = leadingNumber(r.bedrooms, 'Bedrooms');
+      const bathrooms = leadingNumber(r.bathrooms, 'Bathrooms');
+      const notes = blank(r.notes) ? null : r.notes.slice(0, 2000);
+
+      const u = byKey.get(k);
+      if (!u) {
+        stmts.push(db.prepare('INSERT INTO units (property_id, unit_number, sqft, bedrooms, bathrooms, notes) VALUES (?, ?, ?, ?, ?, ?)')
+          .bind(prop.id, r.unit_number, sqft ?? 0, bedrooms ?? 0, bathrooms ?? 0, notes));
+        result.created++;
+      } else if (!updateExisting) {
+        result.skipped_existing++;
+      } else {
+        const next = { sqft: sqft ?? u.sqft, bedrooms: bedrooms ?? u.bedrooms, bathrooms: bathrooms ?? u.bathrooms, notes: notes ?? u.notes };
+        if (next.sqft === u.sqft && next.bedrooms === u.bedrooms && next.bathrooms === u.bathrooms && next.notes === u.notes) {
+          result.unchanged++;
+        } else {
+          stmts.push(db.prepare('UPDATE units SET sqft = ?, bedrooms = ?, bathrooms = ?, notes = ? WHERE id = ?')
+            .bind(next.sqft, next.bedrooms, next.bathrooms, next.notes, u.id));
+          result.updated++;
+        }
+      }
+    } catch (e) {
+      errors.push({ line, error: e.message });
+    }
+  });
+
+  if (errors.length && !payload.skip_errors) return { created: 0, updated: 0, unchanged: 0, skipped_existing: 0, errors };
+  if (stmts.length) await db.batch(stmts);
+  return { ...result, errors };
+}
+
 // Rows are imported in a single D1 batch to stay within per-request query limits.
 // Existing tenants (matched by account number) are updated; others are inserted.
 async function importTenants(db, payload) {
@@ -569,6 +657,7 @@ async function handle({ request, env }) {
   }
 
   if (name === 'tenants' && id === 'import' && method === 'POST') return json(await importTenants(db, await body(request)));
+  if (name === 'units' && id === 'import' && method === 'POST') return json(await importUnits(db, await body(request)));
   if (name === 'tenants' && id && action === 'reset-portal' && method === 'POST') {
     await db.batch([
       db.prepare('UPDATE tenants SET password_hash = NULL WHERE id = ?').bind(id),

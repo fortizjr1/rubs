@@ -6,6 +6,7 @@ It runs entirely on free tiers: **GitHub** (code) + **Cloudflare Pages** (hostin
 ## Features
 
 - **Properties, units, tenants and utility split rules**: add, edit, delete. Tenants have name, email, phone, address, unit, account number, move-in and move-out dates, and number of occupants.
+- **CSV unit import**: one row per unit (Unit, Sq Ft, Bedrooms, Bathrooms, Notes, and optionally Property). Unit numbers are matched ignoring case, so existing units are updated instead of duplicated.
 - **CSV tenant import** with flexible column names and MM/DD/YYYY or YYYY-MM-DD dates. Missing units are created automatically. Re-importing updates tenants by account number instead of duplicating them.
 - **Per-property utility split rules ("set asides")**:
   - **Recovery %**: the share passed to residents. The rest is common area paid by the owner.
@@ -82,7 +83,8 @@ In Cloudflare go to **Security → WAF → Rate limiting rules** (the free plan 
    For Maileroo, copy the SMTP credentials of your sending domain (server `smtp.maileroo.com`, port 465 with SSL, or 587 with STARTTLS). The From email must use that domain.
 2. **Properties → Add property**: fill in the address, office phone and email (printed on statements), days until due, and the Rent Manager property code.
 3. On the property's **Utilities & split rules** tab, add each utility (Water, Sewer…) with its recovery %, split weights, tax % and RM charge code.
-4. **Tenants → Import CSV** (see `public/tenant-import-template.csv`).
+4. On the property's **Units** tab, click **Import CSV** to load every unit, including vacant ones, with its square footage, bedrooms and bathrooms (see `public/unit-import-template.csv`). Re-importing updates existing units, and blank cells keep their current values.
+5. **Tenants → Import CSV** (see `public/tenant-import-template.csv`).
 
 **Every billing cycle**
 1. **Billing → New billing batch**: pick the property, enter the service period and the amount for each utility from the bill, then **Save & calculate**.

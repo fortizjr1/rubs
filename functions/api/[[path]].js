@@ -692,7 +692,9 @@ async function handle({ request, env }) {
         const t = await db.prepare('SELECT id, email, first_name, last_name FROM tenants WHERE id = ?').bind(s.user_id).first();
         if (t) user = { type: 'tenant', id: t.id, email: t.email, name: `${t.first_name || ''} ${t.last_name}`.trim() };
       }
-      return json({ needsSetup, user });
+      // Company name is shown on the sign-in page (it is printed on every statement anyway).
+      const company = await db.prepare("SELECT value FROM settings WHERE key = 'company_name'").first();
+      return json({ needsSetup, user, company_name: company?.value || '' });
     }
     if (action === 'setup' && method === 'POST') {
       const b = await body(request);

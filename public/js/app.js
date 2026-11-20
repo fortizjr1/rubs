@@ -4,13 +4,15 @@ import { startAdmin } from './admin.js';
 import { startResident } from './resident.js';
 
 const app = document.getElementById('app');
+let company = '';
 
 async function boot() {
   let status;
   try { status = await api('/auth/status'); }
   catch (e) { app.innerHTML = `<div class="center"><div class="error">Could not reach the server: ${esc(e.message)}</div></div>`; return; }
+  company = status.company_name || '';
   if (status.needsSetup) return setupScreen();
-  if (!status.user) return loginScreen();
+  if (!status.user) return loginScreen(location.hash === '#staff' ? 'staff' : 'resident');
   if (status.user.type === 'admin') return startAdmin(app, status.user, logout);
   return startResident(app, status.user, logout);
 }
@@ -21,67 +23,173 @@ async function logout() {
   boot();
 }
 
-function authCard(inner) {
-  app.innerHTML = `<div class="auth"><div class="card">${inner}</div></div>`;
-  return app.querySelector('.card');
+// ---------------------------------------------------------------- layout pieces
+
+const ICONS = {
+  doc: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h7l5 5v13H7z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M14 3v5h5M10 13h6M10 17h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  chart: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16M7 16v-5M12 16V7M17 16v-8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  user: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M4 21c1.5-4 4.5-6 8-6s6.5 2 8 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  drop: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z" fill="currentColor"/></svg>',
+  building: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21V5l8-2v18M12 9l8 2v10M3 21h18M7 8h2M7 12h2M7 16h2M15 14h2M15 17h2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+};
+
+function brandPanel({ title, text, points }) {
+  return `<aside class="login-brand">
+    <div class="login-logo"><span class="logo-mark">${ICONS.drop}</span><span>Utility Billing</span></div>
+    <div class="login-pitch">
+      <h1>${title}</h1>
+      <p>${text}</p>
+      <ul>${points.map(([icon, t]) => `<li><span class="pt-icon">${ICONS[icon]}</span><span>${t}</span></li>`).join('')}</ul>
+    </div>
+    <div class="login-foot">${company ? `Managed by ${esc(company)}` : '&nbsp;'}</div>
+  </aside>`;
 }
 
-function bindForm(card, handler) {
-  const form = card.querySelector('form');
-  const err = card.querySelector('.error');
+const RESIDENT_BRAND = {
+  title: 'Your utility statements, all in one place.',
+  text: 'Sign in to the resident portal to see what you owe for water, sewer and other utilities, and why.',
+  points: [
+    ['doc', 'View and download every statement as a PDF'],
+    ['chart', 'See exactly how your share was calculated'],
+    ['user', 'Keep your phone number up to date'],
+  ],
+};
+const STAFF_BRAND = {
+  title: 'Utility billing for your properties.',
+  text: 'Enter the utility bill, split it with your RUBS rules, then email statements and export to Rent Manager.',
+  points: [
+    ['building', 'Properties, units and tenants'],
+    ['chart', 'Batch billing with prorated RUBS splits'],
+    ['doc', 'PDF statements, email and Rent Manager export'],
+  ],
+};
+
+function passwordField({ name = 'password', label = 'Password', autocomplete, minlength, help = '' }) {
+  return `<div class="field"><label for="f_${name}">${label}</label>
+    <div class="pw-wrap"><input id="f_${name}" name="${name}" type="password" required ${minlength ? `minlength="${minlength}"` : ''} autocomplete="${autocomplete}">
+      <button type="button" class="pw-toggle" data-pw-toggle aria-label="Show password">Show</button></div>
+    ${help ? `<div class="help">${help}</div>` : ''}</div>`;
+}
+
+function render(brand, body) {
+  app.innerHTML = `<div class="login">${brandPanel(brand)}<main class="login-main"><div class="login-box">${body}</div></main></div>`;
+  const box = app.querySelector('.login-box');
+  box.querySelectorAll('[data-pw-toggle]').forEach((b) => b.addEventListener('click', () => {
+    const input = b.previousElementSibling;
+    const show = input.type === 'password';
+    input.type = show ? 'text' : 'password';
+    b.textContent = show ? 'Hide' : 'Show';
+    b.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+  }));
+  box.querySelector('input')?.focus();
+  return box;
+}
+
+function bindForm(box, handler, check) {
+  const form = box.querySelector('form');
+  const err = box.querySelector('.error');
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
+    err.hidden = true;
     const data = Object.fromEntries(new FormData(form));
+    const problem = check?.(data);
+    if (problem) { err.textContent = problem; err.hidden = false; return; }
     const btn = form.querySelector('button[type=submit]');
+    const label = btn.textContent;
     btn.disabled = true;
+    btn.textContent = 'Please wait…';
     try { await handler(data); }
-    catch (ex) { err.textContent = ex.message; err.hidden = false; btn.disabled = false; }
+    catch (ex) { err.textContent = ex.message; err.hidden = false; btn.disabled = false; btn.textContent = label; }
+  });
+}
+
+const passwordsMatch = (d) => (d.password !== d.password2 ? 'The two passwords do not match.' : null);
+
+// ---------------------------------------------------------------- screens
+
+function loginScreen(mode = 'resident') {
+  if (mode === 'activate') return activateScreen();
+  const staff = mode === 'staff';
+  const box = render(staff ? STAFF_BRAND : RESIDENT_BRAND, `
+    <div class="segmented" role="tablist">
+      <button type="button" role="tab" data-mode="resident" class="${staff ? '' : 'active'}" aria-selected="${!staff}">Resident</button>
+      <button type="button" role="tab" data-mode="staff" class="${staff ? 'active' : ''}" aria-selected="${staff}">Staff</button>
+    </div>
+    <h2>${staff ? 'Staff sign in' : 'Welcome back'}</h2>
+    <p class="muted">${staff ? 'For property management staff.' : 'Sign in to see your utility statements.'}</p>
+    <div class="error" hidden role="alert"></div>
+    <form novalidate>
+      <div class="field"><label for="f_email">Email</label><input id="f_email" name="email" type="email" required autocomplete="email" placeholder="you@example.com"></div>
+      ${passwordField({ autocomplete: 'current-password' })}
+      <button class="primary block" type="submit">Sign in</button>
+    </form>
+    ${staff
+      ? '<p class="login-note">Need access? An administrator can add you in Settings → Staff accounts.</p>'
+      : `<div class="login-cta"><span>First time here?</span> <button type="button" class="link" data-mode="activate">Activate your account →</button></div>
+         <p class="login-note">Forgot your password? Contact your leasing office. They can reset your access so you can activate again.</p>`}`);
+  box.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
+    history.replaceState(null, '', b.dataset.mode === 'staff' ? '#staff' : location.pathname);
+    loginScreen(b.dataset.mode);
+  }));
+  bindForm(box, async (d) => {
+    await api('/auth/login', { method: 'POST', body: { email: d.email, password: d.password, type: staff ? 'admin' : 'resident' } });
+    boot();
+  }, (d) => (!d.email || !d.password ? 'Enter your email and password.' : null));
+}
+
+function activateScreen() {
+  const box = render(RESIDENT_BRAND, `
+    <button type="button" class="link back" data-back>← Back to sign in</button>
+    <h2>Activate your account</h2>
+    <p class="muted">Set up your resident portal login in one step. You'll need:</p>
+    <ol class="steps-list">
+      <li>Your <b>account number</b>, printed on your utility statement</li>
+      <li>The <b>email address</b> the office has on file for you</li>
+    </ol>
+    <div class="error" hidden role="alert"></div>
+    <form novalidate>
+      <div class="field"><label for="f_account_number">Account number</label><input id="f_account_number" name="account_number" required autocomplete="off" placeholder="e.g. 33580"></div>
+      <div class="field"><label for="f_email">Email on file</label><input id="f_email" name="email" type="email" required autocomplete="email" placeholder="you@example.com"></div>
+      ${passwordField({ label: 'Choose a password', autocomplete: 'new-password', minlength: 8, help: 'At least 8 characters.' })}
+      ${passwordField({ name: 'password2', label: 'Confirm password', autocomplete: 'new-password', minlength: 8 })}
+      <button class="primary block" type="submit">Activate my account</button>
+    </form>
+    <p class="login-note">Account number or email not recognized? Contact your leasing office to check the details they have on file.</p>`);
+  box.querySelector('[data-back]').addEventListener('click', () => loginScreen('resident'));
+  bindForm(box, async (d) => {
+    await api('/auth/activate', { method: 'POST', body: { account_number: d.account_number, email: d.email, password: d.password } });
+    toast('Your account is active. Welcome!');
+    boot();
+  }, (d) => {
+    if (!d.account_number || !d.email) return 'Enter your account number and email.';
+    if ((d.password || '').length < 8) return 'Your password must be at least 8 characters.';
+    return passwordsMatch(d);
   });
 }
 
 function setupScreen() {
-  const card = authCard(`<h1>Welcome</h1><p class="muted">Create the first administrator account.</p>
-    <div class="error" hidden></div>
-    <form>
-      <div class="field"><label>Your name</label><input name="name" autocomplete="name"></div>
-      <div class="field"><label>Email</label><input name="email" type="email" required autocomplete="email"></div>
-      <div class="field"><label>Password (8+ characters)</label><input name="password" type="password" minlength="8" required autocomplete="new-password"></div>
-      <button class="primary" type="submit">Create admin account</button>
+  const box = render({
+    title: 'Set up your billing workspace.',
+    text: 'Create the first administrator account. You can add more staff and your company details afterwards in Settings.',
+    points: STAFF_BRAND.points,
+  }, `
+    <h2>Create the admin account</h2>
+    <p class="muted">This is a one-time step for the first staff user.</p>
+    <div class="error" hidden role="alert"></div>
+    <form novalidate>
+      <div class="field"><label for="f_name">Your name</label><input id="f_name" name="name" autocomplete="name"></div>
+      <div class="field"><label for="f_email">Email</label><input id="f_email" name="email" type="email" required autocomplete="email"></div>
+      ${passwordField({ autocomplete: 'new-password', minlength: 8, help: 'At least 8 characters.' })}
+      ${passwordField({ name: 'password2', label: 'Confirm password', autocomplete: 'new-password', minlength: 8 })}
+      <button class="primary block" type="submit">Create admin account</button>
     </form>`);
-  bindForm(card, async (d) => { await api('/auth/setup', { method: 'POST', body: d }); boot(); });
-}
-
-function loginScreen(mode = 'resident') {
-  const tabs = `<div class="tabs">
-    <button data-mode="resident" class="${mode === 'resident' ? 'active' : ''}">Resident sign in</button>
-    <button data-mode="activate" class="${mode === 'activate' ? 'active' : ''}">First time? Activate</button>
-    <button data-mode="admin" class="${mode === 'admin' ? 'active' : ''}">Staff</button></div>`;
-  const forms = {
-    resident: `<form>
-      <div class="field"><label>Email</label><input name="email" type="email" required autocomplete="email"></div>
-      <div class="field"><label>Password</label><input name="password" type="password" required autocomplete="current-password"></div>
-      <button class="primary" type="submit">Sign in</button></form>`,
-    admin: `<form>
-      <div class="field"><label>Staff email</label><input name="email" type="email" required autocomplete="email"></div>
-      <div class="field"><label>Password</label><input name="password" type="password" required autocomplete="current-password"></div>
-      <button class="primary" type="submit">Sign in</button></form>`,
-    activate: `<p class="muted small">Use the account number from your lease or statement and the email address the office has on file.</p>
-      <form>
-      <div class="field"><label>Account number</label><input name="account_number" required></div>
-      <div class="field"><label>Email on file</label><input name="email" type="email" required autocomplete="email"></div>
-      <div class="field"><label>Choose a password (8+ characters)</label><input name="password" type="password" minlength="8" required autocomplete="new-password"></div>
-      <button class="primary" type="submit">Activate my account</button></form>`,
-  };
-  const card = authCard(`<h1>Utility Billing</h1>${tabs}<div class="error" hidden></div>${forms[mode]}`);
-  card.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => loginScreen(b.dataset.mode)));
-  bindForm(card, async (d) => {
-    if (mode === 'activate') {
-      await api('/auth/activate', { method: 'POST', body: d });
-      toast('Your account is active');
-    } else {
-      await api('/auth/login', { method: 'POST', body: { ...d, type: mode } });
-    }
+  bindForm(box, async (d) => {
+    await api('/auth/setup', { method: 'POST', body: { name: d.name, email: d.email, password: d.password } });
     boot();
+  }, (d) => {
+    if (!d.email) return 'Enter your email.';
+    if ((d.password || '').length < 8) return 'Your password must be at least 8 characters.';
+    return passwordsMatch(d);
   });
 }
 

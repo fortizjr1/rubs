@@ -73,7 +73,8 @@ function drawStatement(page, s) {
   // Amount due
   const top = Math.max(210, ay + 14);
   page.rect(L, top, R - L, 46, NAVY);
-  page.text('AMOUNT DUE', L + 18, top + 28, { size: 12, weight: 'bold', color: WHITE });
+  // Amount for this statement only; payments and any other balance are in Rent Manager.
+  page.text('TOTAL AMOUNT DUE FOR THIS STATEMENT', L + 18, top + 28, { size: 11, weight: 'bold', color: WHITE });
   page.text(usd(s.total_cents), R - 14, top + 32, { size: 23, weight: 'bold', color: WHITE, align: 'right' });
 
   // Current charges
@@ -92,7 +93,7 @@ function drawStatement(page, s) {
   });
   page.line(L, y + 1, R, y + 1, GRAY_LINE, 1);
   y += 17;
-  page.text('Total current charges', L + 8, y, { size: 9.5, weight: 'bold', color: TEXT });
+  page.text('Total for this statement', L + 8, y, { size: 9.5, weight: 'bold', color: TEXT });
   page.text(usd(s.total_cents), R - 8, y, { size: 9.5, weight: 'bold', color: TEXT, align: 'right' });
 
   // Payment

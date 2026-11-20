@@ -212,12 +212,23 @@ async function unitsView(el, { propertyId }) {
 
 // --------------------------------------------------------------- tenants
 
-async function tenantFields(propertyId) {
-  const units = await getUnits(propertyId);
-  return [
-    { name: 'unit_id', label: 'Property / unit', type: 'select', required: true, full: true,
-      options: units.map((u) => [u.id, `${u.property_name} — Unit ${u.unit_number}`]),
-      help: units.length ? '' : 'No units yet. Add units to the property first.' },
+const NEW_UNIT = '__new';
+
+// Tenant add/edit form: pick a property, then a unit at that property, or add a new unit on the spot.
+async function tenantForm({ title, values = {}, propertyId, onSave }) {
+  const [props, units] = await Promise.all([getProperties(), getUnits()]);
+  if (!props.length) return toast('Add a property first (Properties → Add property).', true);
+  const startProp = values.property_id || propertyId || props[0].id;
+  const unitOptions = (pid) => [
+    ...units.filter((u) => u.property_id == pid).map((u) => [u.id, `Unit ${u.unit_number}${u.current_tenant && u.id != values.unit_id ? ` (${u.current_tenant})` : ''}`]),
+    [NEW_UNIT, '+ Add a new unit…'],
+  ];
+  const fields = [
+    { name: 'property_id', label: 'Property', type: 'select', required: true, options: propertyOptions(props) },
+    { name: 'unit_id', label: 'Unit', type: 'select', required: true, options: unitOptions(startProp) },
+    { name: 'new_unit_number', label: 'New unit number', full: true, help: 'Creates this unit at the selected property.' },
+    { name: 'new_sqft', label: 'New unit square feet', type: 'number', min: 0 },
+    { name: 'new_bedrooms', label: 'New unit bedrooms', type: 'number', min: 0 },
     { name: 'first_name', label: 'First name' },
     { name: 'last_name', label: 'Last name', required: true },
     { name: 'email', label: 'Email', type: 'email' },
@@ -229,6 +240,35 @@ async function tenantFields(propertyId) {
     { name: 'move_out', label: 'Move-out date', type: 'date', help: 'Leave blank for current residents.' },
     { name: 'notes', label: 'Notes', type: 'textarea', full: true },
   ];
+  const firstUnits = unitOptions(startProp);
+  const m = formModal({
+    title, fields,
+    values: { occupants: 1, ...values, property_id: startProp, unit_id: values.unit_id || firstUnits[0][0] },
+    onSubmit: async (d) => {
+      if (d.unit_id === NEW_UNIT) {
+        if (!d.new_unit_number) throw new Error('Enter the new unit number');
+        const u = await api('/admin/units', { method: 'POST', body: {
+          property_id: d.property_id, unit_number: d.new_unit_number, sqft: d.new_sqft, bedrooms: d.new_bedrooms } });
+        d.unit_id = u.id;
+        // Select the unit we just created, so a retry after an error doesn't create it twice.
+        units.push(u);
+        unitSel.innerHTML = unitOptions(propSel.value).map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('');
+        unitSel.value = u.id;
+        syncNew();
+      }
+      await onSave(d);
+    },
+  });
+  const propSel = m.querySelector('[name=property_id]');
+  const unitSel = m.querySelector('[name=unit_id]');
+  const newFields = ['new_unit_number', 'new_sqft', 'new_bedrooms'].map((n) => m.querySelector(`[name=${n}]`).closest('.field'));
+  const syncNew = () => newFields.forEach((f) => (f.hidden = unitSel.value !== NEW_UNIT));
+  propSel.addEventListener('change', () => {
+    unitSel.innerHTML = unitOptions(propSel.value).map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('');
+    syncNew();
+  });
+  unitSel.addEventListener('change', syncNew);
+  syncNew();
 }
 
 async function tenantsView(el, { propertyId, filters = {} }) {
@@ -276,13 +316,10 @@ async function tenantsView(el, { propertyId, filters = {} }) {
   });
   div.querySelectorAll('[data-filters] select').forEach((s) => s.addEventListener('change', () => s.form.requestSubmit()));
   onActions(div, {
-    add: async () => formModal({ title: 'Add tenant', fields: await tenantFields(propertyId), values: { occupants: 1 },
-      onSubmit: async (d) => { await api('/admin/tenants', { method: 'POST', body: d }); toast('Tenant added'); reload(); } }),
-    edit: async ({ id }) => {
-      const t = tenants.find((x) => x.id == id);
-      formModal({ title: 'Edit tenant', fields: await tenantFields(propertyId || t.property_id), values: t,
-        onSubmit: async (d) => { await api(`/admin/tenants/${id}`, { method: 'PUT', body: d }); toast('Saved'); reload(); } });
-    },
+    add: () => tenantForm({ title: 'Add tenant', propertyId,
+      onSave: async (d) => { await api('/admin/tenants', { method: 'POST', body: d }); toast('Tenant added'); reload(); } }),
+    edit: ({ id }) => tenantForm({ title: 'Edit tenant', propertyId, values: tenants.find((x) => x.id == id),
+      onSave: async (d) => { await api(`/admin/tenants/${id}`, { method: 'PUT', body: d }); toast('Saved'); reload(); } }),
     moveout: ({ id }) => {
       const t = tenants.find((x) => x.id == id);
       formModal({ title: `Move out ${fullName(t)}`, submitLabel: 'Save move-out',

@@ -224,4 +224,4 @@ From the command line (schema and data):
 npx wrangler d1 export rubs-billing-db --remote --output backup.sql
 ```
 
-D1 also keeps 30 days of point-in-time recovery ("Time Travel") on the free plan.
+D1 also keeps point-in-time recovery ("Time Travel"): 7 days on the Workers Free plan, 30 days on Workers Paid.

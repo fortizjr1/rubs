@@ -1096,10 +1096,10 @@ const bytes = (n) => {
   const u = ['KB', 'MB', 'GB'];
   let i = -1;
   do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
-  return `${n < 10 ? n.toFixed(2) : n < 100 ? n.toFixed(1) : Math.round(n)} ${u[i]}`;
+  return `${Number.isInteger(n) ? n : n < 10 ? n.toFixed(2) : n < 100 ? n.toFixed(1) : Math.round(n)} ${u[i]}`;
 };
 const pct = (a, b) => (a == null || !b ? null : (a / b) * 100);
-const pctText = (p) => (p == null ? '—' : p < 0.01 ? 'less than 0.01%' : `${p < 1 ? p.toFixed(2) : p.toFixed(1)}%`);
+const pctText = (p) => (p == null ? '—' : p < 0.01 ? 'Less than 0.01%' : `${p < 1 ? p.toFixed(2) : p.toFixed(1)}%`);
 
 async function systemView(el) {
   const s = await api('/admin/system');
@@ -1112,12 +1112,20 @@ async function systemView(el) {
         <h2>Database storage</h2>
         <div class="sys-big">${bytes(db.size_bytes)} <span class="muted">of ${bytes(db.limit_bytes)}</span></div>
         <div class="meter" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${used == null ? 0 : used.toFixed(2)}"><span data-meter></span></div>
-        <p class="small muted">${pctText(used)} of the free plan's ${bytes(db.limit_bytes)} limit per database. Your Cloudflare account can hold
-          ${bytes(db.account_limit_bytes)} across all D1 databases. Statement PDFs aren't stored: they're built from the data each time
-          they're opened or emailed, so they take no space.</p>
+        <p class="small muted">${pctText(used)} of the ${esc(db.plan_label)} plan's ${bytes(db.limit_bytes)} limit per database.
+          ${db.plan === 'paid' ? `The first ${bytes(db.included_bytes)} of storage across your account is included in the $5.` : `Your Cloudflare account can hold ${bytes(db.account_limit_bytes)} across all D1 databases.`}
+          Statement PDFs aren't stored: they're built from the data each time they're opened or emailed, so they take no space.</p>
         <dl class="kv small">
+          <dt>Cloudflare plan</dt><dd><select data-plan aria-label="Cloudflare plan">
+            <option value="free" ${db.plan === 'free' ? 'selected' : ''}>Workers Free</option>
+            <option value="paid" ${db.plan === 'paid' ? 'selected' : ''}>Workers Paid ($5/month)</option></select>
+            <div class="muted">Pick the plan your Cloudflare account is on (the app can't see it).</div></dd>
           <dt>Total records</dt><dd>${db.total_rows.toLocaleString()}</dd>
-          <dt>Free plan daily limits</dt><dd>${db.rows_read_per_day.toLocaleString()} rows read · ${db.rows_written_per_day.toLocaleString()} rows written</dd>
+          <dt>Rows read</dt><dd>${esc(db.reads)}</dd>
+          <dt>Rows written</dt><dd>${esc(db.writes)}</dd>
+          <dt>Over the limit</dt><dd>${esc(db.over)}</dd>
+          <dt>Restore points</dt><dd>Cloudflare keeps ${db.time_travel_days} days of automatic restore points ("Time Travel")</dd>
+          <dt>Server time limit</dt><dd>${esc(db.cpu)}</dd>
         </dl>
       </section>
       <section class="card">
@@ -1166,6 +1174,13 @@ async function systemView(el) {
     </div>`;
   el.replaceChildren(div);
   div.querySelector('[data-meter]').style.width = `${Math.max(used || 0, 0.5)}%`;
+  div.querySelector('[data-plan]').addEventListener('change', async (e) => {
+    try {
+      await api('/admin/system/plan', { method: 'PUT', body: { plan: e.target.value } });
+      toast(e.target.value === 'paid' ? 'Saved: Workers Paid. Passwords get stronger protection as people sign in.' : 'Saved: Workers Free');
+      systemView(el);
+    } catch (ex) { toast(ex.message, true); }
+  });
   let busy = false;
   onActions(div, {
     backup: async ({ format }) => {
@@ -1254,7 +1269,7 @@ async function securityView(el) {
         <h2>What's protecting the app</h2>
         <ul class="checklist small">
           ${check(true, '<b>HTTPS only.</b> Cloudflare encrypts every connection, and the browser is told never to use plain HTTP.')}
-          ${check(true, '<b>Passwords are never stored.</b> Only a salted PBKDF2-SHA256 hash is kept, for staff and residents.')}
+          ${check(true, `<b>Passwords are never stored.</b> Only a salted PBKDF2-SHA256 hash is kept (${sec.hash_rounds.toLocaleString()} rounds${sec.plan === 'paid' ? ', the maximum Cloudflare allows; older passwords are upgraded the next time each person signs in' : '; set your plan to Workers Paid in System &amp; storage for 100,000 rounds'}).`)}
           ${check(true, '<b>Secure sign-in cookies</b> (HttpOnly, Secure, SameSite=Strict), so other websites can\'t use your session.')}
           ${check(true, '<b>Strict browser security headers</b>: no outside scripts, no framing of the app (stops click-jacking), no camera/mic/location access.')}
           ${check(sec.altcha_enabled, sec.altcha_enabled ? '<b>Bot check (ALTCHA)</b> on sign-in, activation and setup forms. Self-hosted: no outside service and no tracking.' : '<b>Bot check (ALTCHA) is off.</b> Turn it on below to slow down automated password guessing.')}

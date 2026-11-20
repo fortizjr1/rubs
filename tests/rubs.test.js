@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { calculateRubs, occupiedDays } from '../lib/rubs.js';
+import { calculateRubs, occupiedDays, periodLength } from '../lib/rubs.js';
 
 const units = [
   { id: 1, unit_number: '101', sqft: 1000, bedrooms: 2 },
@@ -68,5 +68,33 @@ test('weighted 50% sqft + 50% occupants, cents always balance', () => {
 
 test('errors on missing weights and bad periods', () => {
   assert.throws(() => calculateRubs({ totalCents: 100, periodStart: '2026-06-01', periodEnd: '2026-06-30', config: base, units, tenants: [] }), /allocation/);
-  assert.throws(() => calculateRubs({ totalCents: 100, periodStart: '2026-06-30', periodEnd: '2026-06-01', config: { ...base, w_equal: 1 }, units, tenants: [] }), /on or after/);
+  assert.throws(() => calculateRubs({ totalCents: 100, periodStart: '2026-06-30', periodEnd: '2026-06-01', config: { ...base, w_equal: 1 }, units, tenants: [] }), /must be after/);
+});
+
+test('meter-read day count matches utility bills (end - start)', () => {
+  assert.equal(periodLength('2026-10-06', '2026-11-03', 'meter'), 28);
+  assert.equal(periodLength('2026-10-06', '2026-11-03', 'calendar'), 29);
+  // move-out and move-in on the same day: no overlap, days add up to the period
+  assert.equal(occupiedDays('2026-10-06', '2026-11-03', '2020-01-01', '2026-10-25', 'meter'), 19);
+  assert.equal(occupiedDays('2026-10-06', '2026-11-03', '2026-10-25', null, 'meter'), 9);
+  assert.equal(occupiedDays('2026-10-06', '2026-11-03', '2026-11-03', null, 'meter'), 0);
+});
+
+test('turnover on the same day in meter mode bills the unit exactly once', () => {
+  const tenants = [
+    { id: 10, unit_id: 1, occupants: 1, move_in: '2020-01-01', move_out: '2026-10-25' },
+    { id: 11, unit_id: 1, occupants: 1, move_in: '2026-10-25', move_out: null },
+  ];
+  const r = calculateRubs({ totalCents: 28000, periodStart: '2026-10-06', periodEnd: '2026-11-03', config: { ...base, w_equal: 1, day_count: 'meter' }, units: [units[0]], tenants });
+  assert.deepEqual(r.lines.map((l) => [l.days, l.share_cents]), [[19, 19000], [9, 9000]]);
+  assert.equal(r.summary.vacancy_cents, 0);
+});
+
+test('utility tax is added on top of the share (10% on $7.24 = $0.72)', () => {
+  const tenants = [{ id: 10, unit_id: 1, occupants: 1, ...fullYear }];
+  const r = calculateRubs({ totalCents: 724, periodStart: '2026-10-06', periodEnd: '2026-11-03', config: { ...base, w_equal: 1, tax_pct: 10, day_count: 'meter' }, units: [units[0]], tenants });
+  assert.equal(r.lines[0].share_cents, 724);
+  assert.equal(r.lines[0].tax_cents, 72);
+  assert.equal(r.lines[0].amount_cents, 796);
+  assert.equal(r.summary.tax_cents, 72);
 });

@@ -1,80 +1,17 @@
 // Single API router for Cloudflare Pages Functions. Handles every /api/* request.
 // D1 database binding name: DB (see wrangler.toml).
 
-import { calculateRubs, parseDate } from '../../lib/rubs.js';
 import { toCSV, csvResponse, dollars } from '../../lib/csv.js';
 import {
   hashPassword, verifyPassword, validatePassword, createSession, sessionCookie,
-  getSession, readSessionToken, HttpError,
+  getSession, readSessionToken,
 } from '../../lib/auth.js';
-
-// ---------------------------------------------------------------- helpers
-
-const json = (data, status = 200, headers = {}) =>
-  new Response(JSON.stringify(data), {
-    status,
-    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers },
-  });
-
-async function body(request) {
-  if (!(request.headers.get('Content-Type') || '').includes('application/json')) {
-    throw new HttpError(415, 'Expected JSON body');
-  }
-  try { return await request.json(); } catch { throw new HttpError(400, 'Invalid JSON'); }
-}
-
-const today = () => new Date().toISOString().slice(0, 10);
-const blank = (v) => v === undefined || v === null || String(v).trim() === '';
-
-// Field types used to validate and clean user input.
-function coerce(type, value, label) {
-  if (blank(value)) return null;
-  switch (type) {
-    case 'text': return String(value).trim().slice(0, 2000);
-    case 'email': {
-      const s = String(value).trim();
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)) throw new HttpError(400, `${label}: invalid email "${s}"`);
-      return s;
-    }
-    case 'date': {
-      const s = normalizeDate(value);
-      if (!s) throw new HttpError(400, `${label}: invalid date "${value}" (use YYYY-MM-DD or MM/DD/YYYY)`);
-      return s;
-    }
-    case 'int': {
-      const n = Number(value);
-      if (!Number.isFinite(n)) throw new HttpError(400, `${label}: must be a number`);
-      return Math.round(n);
-    }
-    case 'num': {
-      const n = Number(String(value).replace(/,/g, ''));
-      if (!Number.isFinite(n)) throw new HttpError(400, `${label}: must be a number`);
-      return n;
-    }
-    case 'bool': return value === true || value === 1 || value === '1' || value === 'true' ? 1 : 0;
-    default:
-      if (Array.isArray(type)) {
-        if (!type.includes(value)) throw new HttpError(400, `${label}: must be one of ${type.join(', ')}`);
-        return value;
-      }
-      throw new Error('Unknown field type ' + type);
-  }
-}
-
-// Accepts YYYY-MM-DD, M/D/YYYY, M/D/YY.
-function normalizeDate(v) {
-  const s = String(v).trim();
-  let m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(s);
-  let y, mo, d;
-  if (m) { [y, mo, d] = [+m[1], +m[2], +m[3]]; }
-  else if ((m = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/.exec(s))) {
-    [mo, d, y] = [+m[1], +m[2], +m[3]];
-    if (y < 100) y += 2000;
-  } else return null;
-  const dt = new Date(Date.UTC(y, mo - 1, d));
-  if (dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
-  return dt.toISOString().slice(0, 10);
-}
+import { HttpError, json, body, today, blank, coerce } from '../../lib/util.js';
+import { loadSettings, saveSettings, sendTestEmail } from '../../lib/settings.js';
+import {
+  listRuns, runDetail, createRun, updateRun, deleteRun, calculateRun, setRunStatus,
+  statementRenderData, pdfResponse, emailStatement,
+} from '../../lib/billing.js';
 
 // ---------------------------------------------------------------- resources (admin CRUD)
 
@@ -84,7 +21,15 @@ const RESOURCES = {
     fields: {
       name: ['text', 'Property name', true], rm_property_code: ['text', 'Rent Manager property code'],
       address: ['text', 'Address'], city: ['text', 'City'], state: ['text', 'State'], zip: ['text', 'ZIP'],
-      notes: ['text', 'Notes'],
+      phone: ['text', 'Office phone'], email: ['email', 'Office email'], notes: ['text', 'Notes'],
+      due_days: ['int', 'Days until due'], day_count: [['meter', 'calendar'], 'Day count'],
+      tax_label: ['text', 'Tax line label'], tax_charge_code: ['text', 'Tax charge code'],
+      billing_fee_cents: ['int', 'Billing fee'], fee_label: ['text', 'Fee line label'], fee_charge_code: ['text', 'Fee charge code'],
+      payment_text: ['text', 'Payment text'], questions_text: ['text', 'Questions text'], footer_text: ['text', 'Footer text'],
+    },
+    validate: (r) => {
+      if (r.due_days != null && (r.due_days < 0 || r.due_days > 120)) throw new HttpError(400, 'Days until due must be between 0 and 120');
+      if (r.billing_fee_cents != null && r.billing_fee_cents < 0) throw new HttpError(400, 'Billing fee cannot be negative');
     },
     list: `SELECT p.*,
              (SELECT COUNT(*) FROM units u WHERE u.property_id = p.id) AS unit_count,
@@ -145,42 +90,20 @@ const RESOURCES = {
       w_sqft: ['num', 'Square footage weight'], w_bedrooms: ['num', 'Bedrooms weight'],
       w_occupants: ['num', 'Occupants weight'], w_equal: ['num', 'Equal split weight'],
       vacancy_mode: [['owner', 'occupied'], 'Vacancy handling'], vacant_occupants: ['num', 'Vacant unit occupant factor'],
-      admin_fee_cents: ['int', 'Admin fee'], active: ['bool', 'Active'], notes: ['text', 'Notes'],
+      admin_fee_cents: ['int', 'Admin fee'], tax_pct: ['num', 'Tax %'], sort_order: ['int', 'Order on statement'],
+      active: ['bool', 'Active'], notes: ['text', 'Notes'],
     },
     list: `SELECT pu.*, p.name AS property_name FROM property_utilities pu
            JOIN properties p ON p.id = pu.property_id WHERE 1=1`,
     filters: { property_id: 'pu.property_id', id: 'pu.id' },
     search: ['pu.utility_name', 'p.name'],
-    order: 'p.name, pu.utility_name',
+    order: 'p.name, pu.sort_order, pu.id',
     validate: (r) => {
+      if (r.tax_pct != null && (r.tax_pct < 0 || r.tax_pct > 100)) throw new HttpError(400, 'Tax % must be between 0 and 100');
       if (r.recovery_pct != null && (r.recovery_pct < 0 || r.recovery_pct > 100)) throw new HttpError(400, 'Recovery % must be between 0 and 100');
       for (const k of ['w_sqft', 'w_bedrooms', 'w_occupants', 'w_equal']) {
         if (r[k] != null && r[k] < 0) throw new HttpError(400, 'Weights cannot be negative');
       }
-    },
-  },
-  bills: {
-    table: 'bills',
-    fields: {
-      property_id: ['int', 'Property', true], property_utility_id: ['int', 'Utility', true],
-      vendor: ['text', 'Utility company'], vendor_account: ['text', 'Utility account #'],
-      period_start: ['date', 'Service period start', true], period_end: ['date', 'Service period end', true],
-      total_cents: ['int', 'Bill total', true], statement_date: ['date', 'Statement date'],
-      charge_date: ['date', 'Charge date'], notes: ['text', 'Notes'],
-    },
-    list: `SELECT b.id, b.property_id, b.property_utility_id, b.vendor, b.vendor_account, b.period_start,
-             b.period_end, b.total_cents, b.statement_date, b.charge_date, b.status, b.notes, b.created_at,
-             p.name AS property_name, pu.utility_name, pu.rm_charge_code,
-             (SELECT COUNT(*) FROM charges c WHERE c.bill_id = b.id) AS charge_count,
-             (SELECT COALESCE(SUM(amount_cents),0) FROM charges c WHERE c.bill_id = b.id) AS charged_cents
-           FROM bills b JOIN properties p ON p.id = b.property_id
-           JOIN property_utilities pu ON pu.id = b.property_utility_id WHERE 1=1`,
-    filters: { property_id: 'b.property_id', status: 'b.status', id: 'b.id' },
-    search: ['p.name', 'pu.utility_name', 'b.vendor'],
-    order: 'b.period_end DESC, b.id DESC',
-    validate: (r) => {
-      if (r.period_end && r.period_start && r.period_end < r.period_start) throw new HttpError(400, 'Service period end is before the start');
-      if (r.total_cents != null && r.total_cents < 0) throw new HttpError(400, 'Bill total cannot be negative');
     },
   },
 };
@@ -226,27 +149,24 @@ async function getOne(db, res, id) {
   return row;
 }
 
-async function checkBillRefs(db, data, existing) {
-  const propertyId = data.property_id ?? existing?.property_id;
-  const utilId = data.property_utility_id ?? existing?.property_utility_id;
-  const u = await db.prepare('SELECT property_id FROM property_utilities WHERE id = ?').bind(utilId).first();
-  if (!u || u.property_id !== Number(propertyId)) throw new HttpError(400, 'That utility does not belong to the selected property');
-}
-
 async function createResource(db, name, input) {
   const res = RESOURCES[name];
   const data = cleanInput(res, input, false);
-  if (name === 'bills') {
-    await checkBillRefs(db, data);
-    data.charge_date ??= today();
-  }
   if (name === 'utilities') {
     data.recovery_pct ??= 100;
     data.vacancy_mode ??= 'owner';
     data.vacant_occupants ??= 1;
     data.admin_fee_cents ??= 0;
+    data.tax_pct ??= 0;
     data.active ??= 1;
     for (const k of ['w_sqft', 'w_bedrooms', 'w_occupants', 'w_equal']) data[k] ??= 0;
+    if (data.sort_order === null) {
+      const m = await db.prepare('SELECT COALESCE(MAX(sort_order), 0) + 1 AS n FROM property_utilities WHERE property_id = ?').bind(data.property_id).first();
+      data.sort_order = m.n;
+    }
+  }
+  if (name === 'properties') {
+    for (const k of ['due_days', 'day_count', 'tax_label', 'billing_fee_cents', 'fee_label']) if (data[k] === null) delete data[k];
   }
   if (name === 'tenants') data.occupants ??= 1;
   if (name === 'units') for (const k of ['sqft', 'bedrooms', 'bathrooms']) data[k] ??= 0;
@@ -263,18 +183,17 @@ async function updateResource(db, name, id, input) {
   const data = cleanInput(res, input, true);
   // Validate cross-field rules against the merged record.
   res.validate?.({ ...existing, ...data });
-  for (const k of ['sqft', 'bedrooms', 'bathrooms', 'occupants', 'recovery_pct', 'w_sqft', 'w_bedrooms', 'w_occupants', 'w_equal', 'vacant_occupants', 'admin_fee_cents', 'active']) {
+  for (const k of ['sqft', 'bedrooms', 'bathrooms', 'occupants', 'recovery_pct', 'w_sqft', 'w_bedrooms', 'w_occupants', 'w_equal', 'vacant_occupants', 'admin_fee_cents', 'tax_pct', 'sort_order', 'active']) {
     if (k in data && data[k] === null) data[k] = 0;
   }
   if ('recovery_pct' in input && blank(input.recovery_pct)) data.recovery_pct = 100;
   const stmts = [];
-  if (name === 'bills') {
-    if (existing.status === 'posted') throw new HttpError(409, 'This bill is posted. Unpost it before editing.');
-    await checkBillRefs(db, data, existing);
-    // Any edit invalidates a previous calculation.
-    stmts.push(db.prepare('DELETE FROM charges WHERE bill_id = ?').bind(id));
-    data.status = 'draft';
-    data.calc_summary = null;
+  if (name === 'properties') {
+    if ('due_days' in data && data.due_days === null) data.due_days = 28;
+    if ('day_count' in data && data.day_count === null) data.day_count = 'meter';
+    if ('tax_label' in data && data.tax_label === null) data.tax_label = 'Utility tax';
+    if ('fee_label' in data && data.fee_label === null) data.fee_label = 'Billing fee';
+    if ('billing_fee_cents' in data && data.billing_fee_cents === null) data.billing_fee_cents = 0;
   }
   const keys = Object.keys(data);
   if (keys.length) {
@@ -287,69 +206,13 @@ async function updateResource(db, name, id, input) {
 
 async function deleteResource(db, name, id) {
   const res = RESOURCES[name];
-  if (name === 'bills') {
-    const b = await db.prepare('SELECT status FROM bills WHERE id = ?').bind(id).first();
-    if (b?.status === 'posted') throw new HttpError(409, 'This bill is posted. Unpost it before deleting.');
-  }
   if (name === 'utilities') {
     const n = await db.prepare('SELECT COUNT(*) AS n FROM bills WHERE property_utility_id = ?').bind(id).first();
-    if (n.n > 0) throw new HttpError(409, 'This utility has bills. Mark it inactive instead of deleting it.');
+    if (n.n > 0) throw new HttpError(409, 'This utility is used in billing batches. Mark it inactive instead of deleting it.');
   }
   const r = await db.prepare(`DELETE FROM ${res.table} WHERE id = ?`).bind(id).run();
   if (!r.meta.changes) throw new HttpError(404, 'Not found');
   return { ok: true };
-}
-
-// ---------------------------------------------------------------- RUBS calculation
-
-async function loadCalcInputs(db, billId) {
-  const bill = await db.prepare('SELECT * FROM bills WHERE id = ?').bind(billId).first();
-  if (!bill) throw new HttpError(404, 'Bill not found');
-  const config = await db.prepare('SELECT * FROM property_utilities WHERE id = ?').bind(bill.property_utility_id).first();
-  const units = (await db.prepare('SELECT id, unit_number, sqft, bedrooms FROM units WHERE property_id = ?').bind(bill.property_id).all()).results;
-  const tenants = (await db.prepare(
-    `SELECT t.id, t.unit_id, t.move_in, t.move_out, t.occupants FROM tenants t JOIN units u ON u.id = t.unit_id
-     WHERE u.property_id = ? AND t.move_in <= ? AND (t.move_out IS NULL OR t.move_out >= ?)`,
-  ).bind(bill.property_id, bill.period_end, bill.period_start).all()).results;
-  return { bill, config, units, tenants };
-}
-
-async function calculateBill(db, billId) {
-  const { bill, config, units, tenants } = await loadCalcInputs(db, billId);
-  if (bill.status === 'posted') throw new HttpError(409, 'This bill is posted. Unpost it to recalculate.');
-  if (!units.length) throw new HttpError(400, 'This property has no units yet');
-  let result;
-  try {
-    result = calculateRubs({
-      totalCents: bill.total_cents, periodStart: bill.period_start, periodEnd: bill.period_end,
-      config, units, tenants,
-    });
-  } catch (e) { throw new HttpError(400, e.message); }
-
-  const summary = { ...result.summary, utility_name: config.utility_name, calculated_at: new Date().toISOString() };
-  const stmts = [db.prepare('DELETE FROM charges WHERE bill_id = ?').bind(billId)];
-  for (const l of result.lines) {
-    stmts.push(db.prepare(
-      `INSERT INTO charges (bill_id, tenant_id, unit_id, days, period_days, share_cents, admin_fee_cents, amount_cents, detail)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(billId, l.tenant_id, l.unit_id, l.days, l.period_days, l.share_cents, l.admin_fee_cents, l.amount_cents, JSON.stringify(l.detail)));
-  }
-  stmts.push(db.prepare("UPDATE bills SET status = 'calculated', calc_summary = ? WHERE id = ?").bind(JSON.stringify(summary), billId));
-  await db.batch(stmts);
-  return billDetail(db, billId);
-}
-
-async function billDetail(db, billId) {
-  const bill = await getOne(db, RESOURCES.bills, billId);
-  const full = await db.prepare('SELECT calc_summary FROM bills WHERE id = ?').bind(billId).first();
-  bill.summary = full.calc_summary ? JSON.parse(full.calc_summary) : null;
-  bill.charges = (await db.prepare(
-    `SELECT c.*, t.first_name, t.last_name, t.account_number, t.move_in, t.move_out, t.occupants,
-            u.unit_number, u.sqft, u.bedrooms
-     FROM charges c JOIN tenants t ON t.id = c.tenant_id JOIN units u ON u.id = c.unit_id
-     WHERE c.bill_id = ? ORDER BY u.unit_number COLLATE NOCASE, t.move_in`,
-  ).bind(billId).all()).results.map((c) => ({ ...c, detail: c.detail ? JSON.parse(c.detail) : null }));
-  return bill;
 }
 
 // ---------------------------------------------------------------- tenant import
@@ -464,47 +327,44 @@ async function importTenants(db, payload) {
 
 // ---------------------------------------------------------------- exports
 
-// Columns for the Rent Manager charge import. Adjust labels/order here to match
-// the import template configured in your Rent Manager database.
+// Columns for the Rent Manager charge import: one row per statement line (Water, Sewer, tax, fee).
+// Adjust labels/order here to match the import template in your Rent Manager database.
 const RM_CHARGE_COLUMNS = [
   { label: 'PropertyCode', value: (r) => r.rm_property_code || r.property_name },
   { label: 'Unit', value: 'unit_number' },
   { label: 'TenantAccount', value: 'account_number' },
   { label: 'TenantName', value: (r) => [r.first_name, r.last_name].filter(Boolean).join(' ') },
-  { label: 'ChargeType', value: (r) => r.rm_charge_code || r.utility_name },
-  { label: 'Amount', value: (r) => dollars(r.amount_cents) },
-  { label: 'TransactionDate', value: (r) => r.charge_date || today() },
-  { label: 'Comment', value: (r) => `${r.utility_name} ${r.period_start} to ${r.period_end} (${r.days}/${r.period_days} days)` },
+  { label: 'ChargeType', value: (r) => r.line.charge_code },
+  { label: 'Amount', value: (r) => dollars(r.line.amount_cents) },
+  { label: 'TransactionDate', value: 'charge_date' },
+  { label: 'DueDate', value: 'due_date' },
+  { label: 'Comment', value: (r) => `${r.line.label} ${r.period_start} to ${r.period_end}` },
   { label: 'PeriodStart', value: 'period_start' },
   { label: 'PeriodEnd', value: 'period_end' },
-  { label: 'UtilityShare', value: (r) => dollars(r.share_cents) },
-  { label: 'AdminFee', value: (r) => dollars(r.admin_fee_cents) },
 ];
 
 async function exportCharges(db, url) {
-  let sql = `SELECT c.*, t.first_name, t.last_name, t.account_number, u.unit_number,
-               p.name AS property_name, p.rm_property_code, pu.utility_name, pu.rm_charge_code,
-               b.period_start, b.period_end, b.charge_date, b.status
-             FROM charges c JOIN bills b ON b.id = c.bill_id JOIN tenants t ON t.id = c.tenant_id
-             JOIN units u ON u.id = c.unit_id JOIN properties p ON p.id = b.property_id
-             JOIN property_utilities pu ON pu.id = b.property_utility_id WHERE 1=1`;
+  let sql = `SELECT s.id, s.lines, t.first_name, t.last_name, t.account_number, u.unit_number,
+               p.name AS property_name, p.rm_property_code, r.period_start, r.period_end, r.charge_date, r.due_date
+             FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id JOIN tenants t ON t.id = s.tenant_id
+             JOIN units u ON u.id = s.unit_id JOIN properties p ON p.id = r.property_id
+             WHERE r.status = 'finalized'`;
   const args = [];
   const p = (k) => url.searchParams.get(k);
-  if (p('bill_id')) { sql += ' AND b.id = ?'; args.push(p('bill_id')); }
-  if (p('property_id')) { sql += ' AND b.property_id = ?'; args.push(p('property_id')); }
-  if (p('from')) { sql += ' AND b.charge_date >= ?'; args.push(p('from')); }
-  if (p('to')) { sql += ' AND b.charge_date <= ?'; args.push(p('to')); }
-  if (p('status') !== 'all') sql += " AND b.status = 'posted'";
-  if (p('unexported') === '1') sql += ' AND c.exported_at IS NULL';
-  sql += ' ORDER BY p.name, u.unit_number COLLATE NOCASE, pu.utility_name';
-  const rows = (await db.prepare(sql).bind(...args).all()).results;
-  if (p('mark') === '1' && rows.length) {
-    const now = new Date().toISOString();
-    const ids = rows.map((r) => r.id);
+  if (p('run_id')) { sql += ' AND r.id = ?'; args.push(p('run_id')); }
+  if (p('property_id')) { sql += ' AND r.property_id = ?'; args.push(p('property_id')); }
+  if (p('from')) { sql += ' AND r.charge_date >= ?'; args.push(p('from')); }
+  if (p('to')) { sql += ' AND r.charge_date <= ?'; args.push(p('to')); }
+  if (p('unexported') === '1') sql += ' AND s.exported_at IS NULL';
+  sql += ' ORDER BY p.name, r.period_end, u.unit_number COLLATE NOCASE';
+  const statements = (await db.prepare(sql).bind(...args).all()).results;
+  const rows = statements.flatMap((s) => JSON.parse(s.lines).map((line) => ({ ...s, line })));
+  if (p('mark') === '1' && statements.length) {
+    const ids = statements.map((r) => r.id);
     const stmts = [];
     for (let i = 0; i < ids.length; i += 90) {
       const chunk = ids.slice(i, i + 90);
-      stmts.push(db.prepare(`UPDATE charges SET exported_at = ? WHERE id IN (${chunk.map(() => '?').join(',')})`).bind(now, ...chunk));
+      stmts.push(db.prepare(`UPDATE statements SET exported_at = datetime('now') WHERE id IN (${chunk.map(() => '?').join(',')})`).bind(...chunk));
     }
     await db.batch(stmts);
   }
@@ -525,22 +385,33 @@ async function exportTable(db, name, url) {
 // ---------------------------------------------------------------- dashboard
 
 async function adminDashboard(db) {
-  const [counts, billing, recent] = await db.batch([
+  const [counts, ytd, recent] = await db.batch([
     db.prepare(`SELECT
       (SELECT COUNT(*) FROM properties) AS properties,
       (SELECT COUNT(*) FROM units) AS units,
       (SELECT COUNT(*) FROM tenants WHERE move_in <= date('now') AND (move_out IS NULL OR move_out >= date('now'))) AS current_tenants,
       (SELECT COUNT(*) FROM tenants WHERE move_in > date('now')) AS upcoming_move_ins,
       (SELECT COUNT(*) FROM tenants WHERE move_out BETWEEN date('now') AND date('now','+30 days')) AS move_outs_30d,
-      (SELECT COUNT(*) FROM bills WHERE status != 'posted') AS open_bills,
-      (SELECT COUNT(*) FROM charges c JOIN bills b ON b.id = c.bill_id WHERE b.status = 'posted' AND c.exported_at IS NULL) AS unexported_charges`),
-    db.prepare(`SELECT COALESCE(SUM(b.total_cents),0) AS billed_by_utilities,
-      COALESCE((SELECT SUM(c.amount_cents) FROM charges c JOIN bills b2 ON b2.id = c.bill_id
-                WHERE b2.status = 'posted' AND b2.period_end >= date('now','start of year')),0) AS charged_to_residents
-      FROM bills b WHERE b.status = 'posted' AND b.period_end >= date('now','start of year')`),
-    db.prepare(`${RESOURCES.bills.list} ORDER BY b.created_at DESC LIMIT 8`),
+      (SELECT COUNT(*) FROM billing_runs WHERE status != 'finalized') AS open_batches,
+      (SELECT COUNT(*) FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id JOIN tenants t ON t.id = s.tenant_id
+         WHERE r.status = 'finalized' AND s.emailed_at IS NULL AND t.email IS NOT NULL) AS unsent_statements,
+      (SELECT COUNT(*) FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id
+         WHERE r.status = 'finalized' AND s.exported_at IS NULL) AS unexported_statements`),
+    db.prepare(`SELECT
+      COALESCE((SELECT SUM(b.total_cents) FROM bills b JOIN billing_runs r ON r.id = b.billing_run_id
+        WHERE r.status = 'finalized' AND r.period_end >= date('now','start of year')),0) AS city_bills,
+      COALESCE((SELECT SUM(s.total_cents) FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id
+        WHERE r.status = 'finalized' AND r.period_end >= date('now','start of year')),0) AS billed_to_residents`),
+    db.prepare(`SELECT r.id, r.period_start, r.period_end, r.status, p.name AS property_name,
+      (SELECT COALESCE(SUM(total_cents),0) FROM bills b WHERE b.billing_run_id = r.id) AS city_total_cents,
+      (SELECT COALESCE(SUM(total_cents),0) FROM statements s WHERE s.billing_run_id = r.id) AS billed_cents,
+      (SELECT COUNT(*) FROM statements s WHERE s.billing_run_id = r.id) AS statement_count,
+      (SELECT COUNT(*) FROM statements s WHERE s.billing_run_id = r.id AND s.emailed_at IS NOT NULL) AS emailed_count,
+      (SELECT GROUP_CONCAT(pu.utility_name, ', ') FROM bills b JOIN property_utilities pu ON pu.id = b.property_utility_id
+         WHERE b.billing_run_id = r.id) AS utilities
+      FROM billing_runs r JOIN properties p ON p.id = r.property_id ORDER BY r.created_at DESC LIMIT 8`),
   ]);
-  return { counts: counts.results[0], ytd: billing.results[0], recent_bills: recent.results };
+  return { counts: counts.results[0], ytd: ytd.results[0], recent_runs: recent.results };
 }
 
 // ---------------------------------------------------------------- router
@@ -627,13 +498,27 @@ async function handle({ request, env }) {
                 p.name AS property_name, p.address, p.city, p.state, p.zip
          FROM tenants t JOIN units u ON u.id = t.unit_id JOIN properties p ON p.id = u.property_id WHERE t.id = ?`,
       ).bind(tid).first();
+      const statements = (await db.prepare(
+        `SELECT s.id, s.days, s.total_cents, s.lines, r.period_start, r.period_end, r.statement_date, r.due_date
+         FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id
+         WHERE s.tenant_id = ? AND r.status = 'finalized' ORDER BY r.period_end DESC, s.id DESC`,
+      ).bind(tid).all()).results;
       const charges = (await db.prepare(
-        `SELECT c.id, c.days, c.period_days, c.share_cents, c.admin_fee_cents, c.amount_cents, c.detail,
-                b.period_start, b.period_end, b.charge_date, b.total_cents AS bill_total_cents, pu.utility_name
+        `SELECT c.statement_id, c.days, c.period_days, c.share_cents, c.tax_cents, c.detail, b.total_cents AS bill_total_cents, pu.utility_name
          FROM charges c JOIN bills b ON b.id = c.bill_id JOIN property_utilities pu ON pu.id = b.property_utility_id
-         WHERE c.tenant_id = ? AND b.status = 'posted' ORDER BY b.period_end DESC, pu.utility_name`,
-      ).bind(tid).all()).results.map((c) => ({ ...c, detail: c.detail ? JSON.parse(c.detail) : null }));
-      return json({ me, charges });
+         JOIN billing_runs r ON r.id = b.billing_run_id
+         WHERE c.tenant_id = ? AND r.status = 'finalized' ORDER BY pu.sort_order, pu.id`,
+      ).bind(tid).all()).results;
+      const out = statements.map((s) => ({
+        ...s, lines: JSON.parse(s.lines),
+        charges: charges.filter((c) => c.statement_id === s.id).map((c) => ({ ...c, detail: c.detail ? JSON.parse(c.detail) : null })),
+      }));
+      return json({ me, statements: out });
+    }
+    if (seg[1] === 'statements' && seg[3] === 'pdf' && method === 'GET') {
+      const [s] = await statementRenderData(db, { statementId: seg[2], tenantId: tid, onlyFinalized: true });
+      if (!s) throw new HttpError(404, 'Statement not found');
+      return pdfResponse(s);
     }
     if (seg[1] === 'profile' && method === 'PUT') {
       const b = await body(request);
@@ -675,20 +560,33 @@ async function handle({ request, env }) {
     return json({ ok: true });
   }
 
-  if (name === 'bills' && id && method === 'POST') {
-    if (action === 'calculate') return json(await calculateBill(db, id));
-    if (action === 'post') {
-      const b = await db.prepare('SELECT status FROM bills WHERE id = ?').bind(id).first();
-      if (b?.status !== 'calculated') throw new HttpError(409, 'Calculate the bill before posting it');
-      await db.prepare("UPDATE bills SET status = 'posted' WHERE id = ?").bind(id).run();
-      return json(await billDetail(db, id));
-    }
-    if (action === 'unpost') {
-      await db.prepare("UPDATE bills SET status = 'calculated' WHERE id = ? AND status = 'posted'").bind(id).run();
-      return json(await billDetail(db, id));
-    }
+  // ---- billing batches
+  if (name === 'runs') {
+    if (method === 'GET' && !id) return json(await listRuns(db, url));
+    if (method === 'GET' && id && !action) return json(await runDetail(db, id));
+    if (method === 'GET' && id && action === 'pdf-data') return json(await statementRenderData(db, { runId: id }));
+    if (method === 'POST' && !id) return json(await runDetail(db, await createRun(db, await body(request))), 201);
+    if (method === 'PUT' && id) { await updateRun(db, id, await body(request)); return json(await runDetail(db, id)); }
+    if (method === 'DELETE' && id) { await deleteRun(db, id); return json({ ok: true }); }
+    if (method === 'POST' && action === 'calculate') return json(await calculateRun(db, id));
+    if (method === 'POST' && (action === 'finalize' || action === 'reopen')) return json(await setRunStatus(db, id, action));
+    throw new HttpError(404, 'Not found');
   }
-  if (name === 'bills' && id && method === 'GET') return json(await billDetail(db, id));
+  if (name === 'statements' && id) {
+    if (method === 'GET' && action === 'pdf') {
+      const [s] = await statementRenderData(db, { statementId: id });
+      if (!s) throw new HttpError(404, 'Statement not found');
+      return pdfResponse(s);
+    }
+    if (method === 'POST' && action === 'email') return json(await emailStatement(db, id));
+  }
+
+  // ---- settings
+  if (name === 'settings') {
+    if (method === 'GET' && !id) return json(await loadSettings(db));
+    if (method === 'PUT' && !id) return json(await saveSettings(db, await body(request)));
+    if (method === 'POST' && id === 'test-email') return json(await sendTestEmail(db, (await body(request)).to));
+  }
 
   if (name === 'admins') {
     if (method === 'GET' && !id) return json((await db.prepare('SELECT id, email, name, created_at FROM admins ORDER BY email').all()).results);

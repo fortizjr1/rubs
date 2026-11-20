@@ -118,3 +118,22 @@ a.plain:hover { text-decoration: none; box-shadow: 0 2px 6px rgba(16,24,40,.15);
 .m0 { margin: 0; }
 .main.centered { margin: 0 auto; }
 .field[hidden] { display: none; }
+.form-heading { margin: .75rem 0 .25rem; padding-top: .75rem; border-top: 1px solid var(--line); font-size: .95rem; }
+.mt { margin-top: 1.5rem; }
+.grow { flex: 1; min-width: 220px; }
+.badge.danger { background: #fee4e2; color: var(--danger); }
+.badge.finalized { background: #dcfae6; color: var(--ok); }
+table.lines { width: 100%; border: 1px solid var(--line); border-radius: 8px; }
+table.lines input { width: 140px; text-align: right; }
+table.lines td { vertical-align: middle; }
+ol.steps { list-style: none; display: flex; gap: .5rem; padding: 0; margin: 0 0 1rem; flex-wrap: wrap; }
+ol.steps li { display: flex; align-items: center; gap: .45rem; padding: .4rem .8rem; border-radius: 999px; background: #fff; border: 1px solid var(--line); color: var(--muted); font-size: .85rem; }
+ol.steps li span { display: inline-grid; place-items: center; width: 1.35rem; height: 1.35rem; border-radius: 50%; background: #f2f4f7; font-size: .75rem; font-weight: 700; }
+ol.steps li.done { color: var(--ok); border-color: #abefc6; }
+ol.steps li.done span { background: var(--ok); color: #fff; }
+ol.steps li.current { color: var(--primary-dark); border-color: var(--primary); font-weight: 600; }
+ol.steps li.current span { background: var(--primary); color: #fff; }
+.progress { height: 10px; background: #eef0f3; border-radius: 999px; overflow: hidden; margin: 1rem 0 .5rem; }
+.progress .bar { height: 100%; width: 0; background: var(--primary); transition: width .2s; }
+.log { max-height: 220px; overflow: auto; margin-top: .5rem; }
+.log .error { margin: .25rem 0; padding: .35rem .6rem; }

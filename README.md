@@ -5,21 +5,20 @@ It runs entirely on free tiers: **GitHub** (code) + **Cloudflare Pages** (hostin
 
 ## Features
 
-- **Properties, units, tenants, utilities and bills** can all be added, edited and deleted.
-- **Tenants**: name, email, phone, address, unit, account number, move-in and move-out dates, and number of occupants.
-- **CSV tenant import** with flexible column names and MM/DD/YYYY or YYYY-MM-DD dates. Missing units are created automatically. Re-importing updates tenants by account number instead of creating duplicates.
+- **Properties, units, tenants and utility split rules**: add, edit, delete. Tenants have name, email, phone, address, unit, account number, move-in and move-out dates, and number of occupants.
+- **CSV tenant import** with flexible column names and MM/DD/YYYY or YYYY-MM-DD dates. Missing units are created automatically. Re-importing updates tenants by account number instead of duplicating them.
 - **Per-property utility split rules ("set asides")**:
-  - **Recovery %**: the share of the bill passed to residents. The rest is common area paid by the owner.
-  - **Weighted split**: any mix of square footage, bedrooms, number of occupants and equal-per-unit (e.g. 50% sq ft + 50% occupants).
-  - **Vacancy handling**: the owner absorbs vacant units, or the bill is split among occupied units only.
-  - **Admin/billing fee**: a flat amount added to each resident's charge.
+  - **Recovery %**: the share passed to residents. The rest is common area paid by the owner.
+  - **Weighted split**: any mix of square footage, bedrooms, occupants and equal-per-unit.
+  - **Vacancy handling**: the owner pays for vacant units, or the bill is split among occupied units only.
+  - **Tax %** added on top of the share (e.g. 10% utility tax on water).
   - **Rent Manager charge code**.
-- **Proration**: each resident is billed only for the days they occupied the unit during the service period. Move-in and move-out days both count as occupied.
-- **Exact cents**: rounding always adds up to the billable amount.
-- **Bill workflow**: enter the bill from the utility company → **Calculate** → review → **Post** (residents can then see it) → **Export**.
-- **Rent Manager CSV export** of posted charges, with an option to export only charges not exported before. Properties, units, tenants, utilities and bills can also be exported to CSV.
-- **Admin dashboard**: counts, upcoming move-ins and move-outs, bills not yet posted, charges not yet exported, and year-to-date recovery rate.
-- **Resident dashboard**: account and unit info, charge history, and a plain-English "How was this calculated?" for each charge.
+- **Batch billing**: one **billing batch** per bill from the utility company. Enter every amount on the bill (Water, Sewer…), and one click runs RUBS for all of them and builds **one statement per resident**.
+- **Proration by days occupied**. By default days are counted like the city bill (end date minus start date, so Oct 6 – Nov 3 = 28 days). A move-out and move-in on the same day never overlap.
+- **PDF statements** in the property's own layout: header, account box, amount due, current charges, payment text, questions box and footer. Download one, or download all as a single PDF for printing.
+- **Email statements** with the PDF attached, through your SMTP provider (e.g. Maileroo), with a progress bar. Each statement records sent or failed. Includes a **Send test email** button.
+- **Rent Manager CSV export**: one row per charge (Water, Sewer, tax, fee) with its charge code. Optionally export only statements not exported before.
+- **Admin dashboard** and a **resident portal** where residents see and download their statements, with a plain-English "How was this calculated?".
 
 ## How the RUBS math works
 
@@ -54,7 +53,7 @@ You need a free GitHub account, a free Cloudflare account, and [Node.js](https:/
    npx wrangler d1 create rubs-billing-db
    ```
    Copy the `database_id` it prints into `wrangler.toml`, replacing the zeros.
-4. **Create the tables:**
+4. **Create the tables** (run this again whenever a new file appears in `migrations/`):
    ```bash
    npm run db:migrate:remote
    ```
@@ -78,22 +77,29 @@ In Cloudflare go to **Security → WAF → Rate limiting rules** (the free plan 
 
 ## Day-to-day workflow
 
-1. **Properties → Add property.** Fill in the Rent Manager property code.
-2. On the property's **Utilities & split rules** tab, add each utility (Water, Sewer, Trash…) with its recovery %, weights, fee and RM charge code.
-3. **Tenants → Import CSV** (see `public/tenant-import-template.csv`), or add tenants one at a time. Fill in the unit square footage and bedrooms if you split by those.
-4. When a bill arrives: **Utility Bills → Add utility bill** → enter the total and service period → **Calculate** → review → **Post**.
-5. **Export to Rent Manager → Download CSV**, then import it into Rent Manager.
-6. Moves: use **Move out** on a tenant, or add the new tenant with their move-in date. The next calculation prorates automatically.
+**One-time setup**
+1. **Settings → Company & email**: enter the company name and your SMTP details, then click **Send test email**.
+   For Maileroo, copy the SMTP credentials of your sending domain (server `smtp.maileroo.com`, port 465 with SSL, or 587 with STARTTLS). The From email must use that domain.
+2. **Properties → Add property**: fill in the address, office phone and email (printed on statements), days until due, and the Rent Manager property code.
+3. On the property's **Utilities & split rules** tab, add each utility (Water, Sewer…) with its recovery %, split weights, tax % and RM charge code.
+4. **Tenants → Import CSV** (see `public/tenant-import-template.csv`).
+
+**Every billing cycle**
+1. **Billing → New billing batch**: pick the property, enter the service period and the amount for each utility from the bill, then **Save & calculate**.
+2. Review the statements (click **PDF** to preview any one), then click **Finalize statements**.
+3. Click **Email statements**. For residents without an email, use **Download all PDFs** and print theirs.
+4. Click **Export CSV for Rent Manager** and import the file into Rent Manager.
+5. Moves: set the move-out date or add the new tenant before calculating. Proration is automatic.
 
 ### Rent Manager CSV columns
 
-`PropertyCode, Unit, TenantAccount, TenantName, ChargeType, Amount, TransactionDate, Comment, PeriodStart, PeriodEnd, UtilityShare, AdminFee`
+`PropertyCode, Unit, TenantAccount, TenantName, ChargeType, Amount, TransactionDate, DueDate, Comment, PeriodStart, PeriodEnd`
 
-Map these in your Rent Manager import template. To rename or reorder the columns, edit `RM_CHARGE_COLUMNS` in `functions/api/[[path]].js`.
+Each statement line is one row: each utility uses its RM charge code, tax uses the property's tax code, and the fee uses the fee code. To rename or reorder the columns, edit `RM_CHARGE_COLUMNS` in `functions/api/[[path]].js`.
 
 ### Resident portal
 
-Residents open the same URL and click **First time? Activate**. They enter their **account number** and the **email on file**, then choose a password. Residents only see charges from posted bills. Staff can reset a resident's login from the Tenants page.
+Residents open the same URL and click **First time? Activate**. They enter their **account number** and the **email on file**, then choose a password. Residents only see finalized statements and can download them as PDFs. Staff can reset a resident's login from the Tenants page.
 
 ## Run locally
 
@@ -117,12 +123,17 @@ Then open http://localhost:8788. To run the calculation tests: `npm test`.
 ## Project layout
 
 ```
-public/            Front end (plain HTML/CSS/JS, no build step)
-  js/admin.js      Admin dashboard
-  js/resident.js   Resident dashboard
-functions/api/     API, a single router: [[path]].js
-lib/rubs.js        RUBS calculation engine
-lib/auth.js        Password hashing and sessions
+public/                 Front end (plain HTML/CSS/JS, no build step)
+  js/admin.js           Admin dashboard
+  js/billing.js         Billing batches, statements, email and settings screens
+  js/resident.js        Resident dashboard
+  js/shared/            PDF statement layout (used by both the server and the browser)
+functions/api/          API router: [[path]].js
+lib/rubs.js             RUBS calculation engine
+lib/billing.js          Billing batches, statements, PDFs and email
+lib/smtp.js             SMTP client (Cloudflare TCP sockets)
+lib/settings.js         Company, SMTP and email template settings
+lib/auth.js             Password hashing and sessions
 migrations/        Database schema (D1)
 tests/             Calculation tests
 ```

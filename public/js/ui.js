@@ -60,6 +60,7 @@ export function confirmBox(message, okLabel = 'Delete') {
 }
 
 function fieldHtml(f, value) {
+  if (f.type === 'heading') return `<h3 class="full form-heading">${esc(f.label)}</h3>${f.help ? `<p class="full muted small m0">${esc(f.help)}</p>` : ''}`;
   const id = 'f_' + f.name;
   const req = f.required ? 'required' : '';
   let input;
@@ -69,7 +70,7 @@ function fieldHtml(f, value) {
       ${f.options.map(([v, l]) => `<option value="${esc(v)}" ${String(v) === String(value ?? '') ? 'selected' : ''}>${esc(l)}</option>`).join('')}
     </select>`;
   } else if (f.type === 'textarea') {
-    input = `<textarea id="${id}" name="${f.name}" rows="3">${esc(value)}</textarea>`;
+    input = `<textarea id="${id}" name="${f.name}" rows="3" ${f.placeholder ? `placeholder="${esc(f.placeholder)}"` : ''}>${esc(value)}</textarea>`;
   } else if (f.type === 'checkbox') {
     input = `<input type="checkbox" id="${id}" name="${f.name}" ${value ? 'checked' : ''}>`;
   } else {
@@ -86,6 +87,7 @@ function fieldHtml(f, value) {
 export function readForm(form, fields) {
   const data = {};
   for (const f of fields) {
+    if (f.type === 'heading') continue;
     const el = form.elements[f.name];
     if (!el) continue;
     if (f.type === 'checkbox') data[f.name] = el.checked;
@@ -117,7 +119,7 @@ export function formModal({ title, fields, values = {}, submitLabel = 'Save', on
       btn.disabled = false;
     }
   });
-  form.querySelector('input,select,textarea')?.focus();
+  form.querySelector('input:not([type=hidden]),select,textarea')?.focus();
   return m;
 }
 

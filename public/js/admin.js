@@ -1,13 +1,15 @@
-// Admin app: dashboard, properties, units, tenants, utilities, bills, exports, settings.
+// Admin app: dashboard, properties, units, tenants, utilities, billing, exports, settings.
 import {
   api, esc, money, date, fullName, toast, modal, closeModal, confirmBox, formModal, table, parseCSV, onActions,
 } from './ui.js';
+import { runsTable, runsView, runForm, runDetailPage, emailSettingsView } from './billing.js';
+import { DEFAULT_TEXT } from './shared/statement-pdf.js';
 
 let root, currentUser, doLogout;
 
 const NAV = [
   ['dashboard', 'Dashboard'], ['properties', 'Properties'], ['tenants', 'Tenants'],
-  ['bills', 'Utility Bills'], ['exports', 'Export to Rent Manager'], ['settings', 'Settings'],
+  ['billing', 'Billing'], ['exports', 'Export to Rent Manager'], ['settings', 'Settings'],
 ];
 
 export function startAdmin(app, user, logout) {
@@ -42,9 +44,9 @@ async function route() {
     switch (parts[0]) {
       case 'properties': return parts[1] ? await propertyDetail(parts[1], parts[2] || 'units') : await propertiesPage();
       case 'tenants': return await listPage('Tenants', (el) => tenantsView(el, {}));
-      case 'bills': return parts[1] ? await billDetail(parts[1]) : await listPage('Utility Bills', (el) => billsView(el, {}));
+      case 'billing': return parts[1] ? await runDetailPage(root, parts[1]) : await listPage('Billing', (el) => runsView(el, {}));
       case 'exports': return await exportsPage();
-      case 'settings': return await settingsPage();
+      case 'settings': return await settingsPage(parts[1] || 'email');
       default: return await dashboard();
     }
   } catch (e) {
@@ -71,29 +73,30 @@ const propertyOptions = (props) => props.map((p) => [p.id, p.name]);
 async function dashboard() {
   const d = await api('/admin/dashboard');
   const c = d.counts;
-  const recovery = d.ytd.billed_by_utilities ? Math.round((d.ytd.charged_to_residents / d.ytd.billed_by_utilities) * 1000) / 10 : 0;
+  const recovery = d.ytd.city_bills ? Math.round((d.ytd.billed_to_residents / d.ytd.city_bills) * 1000) / 10 : 0;
   const stat = (label, value, href) => `<a class="card stat plain" href="${href}">
     <div class="label">${label}</div><div class="value">${value}</div></a>`;
   const div = mount(`<div class="topbar"><h1>Dashboard</h1>
-      <div class="row"><button data-action="import">Import tenants</button><button class="primary" data-action="addBill">+ Add utility bill</button></div></div>
+      <div class="row"><button data-action="import">Import tenants</button><button class="primary" data-action="newRun">+ New billing batch</button></div></div>
     <div class="grid cards mb">
       ${stat('Properties', c.properties, '#/properties')}
       ${stat('Units', c.units, '#/properties')}
       ${stat('Current residents', c.current_tenants, '#/tenants')}
       ${stat('Upcoming move-ins', c.upcoming_move_ins, '#/tenants')}
       ${stat('Move-outs next 30 days', c.move_outs_30d, '#/tenants')}
-      ${stat('Bills not posted', c.open_bills, '#/bills')}
-      ${stat('Charges to export', c.unexported_charges, '#/exports')}
+      ${stat('Batches not finalized', c.open_batches, '#/billing')}
+      ${stat('Statements not emailed', c.unsent_statements, '#/billing')}
+      ${stat('Statements not exported', c.unexported_statements, '#/exports')}
     </div>
     <div class="grid cards mb">
-      ${stat('Utility bills this year (posted)', money(d.ytd.billed_by_utilities), '#/bills')}
-      ${stat('Billed to residents this year', money(d.ytd.charged_to_residents), '#/bills')}
-      ${stat('Recovery rate', recovery + '%', '#/bills')}
+      ${stat('Utility bills this year', money(d.ytd.city_bills), '#/billing')}
+      ${stat('Billed to residents this year', money(d.ytd.billed_to_residents), '#/billing')}
+      ${stat('Recovery rate', recovery + '%', '#/billing')}
     </div>
-    <h2>Recent utility bills</h2>
-    ${billsTable(d.recent_bills)}`);
+    <h2>Recent billing batches</h2>
+    ${runsTable(d.recent_runs)}`);
   onActions(div, {
-    addBill: () => billForm({}, (b) => (location.hash = `#/bills/${b.id}`)),
+    newRun: () => runForm({}),
     import: () => importModal(null, () => (location.hash = '#/tenants')),
   });
 }
@@ -107,6 +110,23 @@ const PROPERTY_FIELDS = [
   { name: 'city', label: 'City' },
   { name: 'state', label: 'State' },
   { name: 'zip', label: 'ZIP' },
+  { type: 'heading', label: 'Printed on statements' },
+  { name: 'phone', label: 'Office phone', type: 'tel' },
+  { name: 'email', label: 'Office email', type: 'email', help: 'Also used as the reply-to address for statement emails.' },
+  { name: 'due_days', label: 'Days until due', type: 'number', min: 0, help: 'Due date = statement date + this many days (default 28).' },
+  { name: 'day_count', label: 'How to count days', type: 'select', required: true,
+    options: [['meter', 'Like the utility bill: end date minus start date'], ['calendar', 'Calendar: include first and last day']],
+    help: 'With the first option, Oct 6 – Nov 3 is 28 days, matching most city bills.' },
+  { name: 'tax_label', label: 'Tax line name', placeholder: 'Utility tax', help: 'Set the tax % on each utility.' },
+  { name: 'tax_charge_code', label: 'Tax Rent Manager charge code', placeholder: 'UTILTAX' },
+  { name: 'billing_fee_cents', label: 'Billing fee per statement ($)', type: 'money', min: 0, help: 'Optional flat fee added to every statement.' },
+  { name: 'fee_label', label: 'Fee line name', placeholder: 'Billing fee' },
+  { name: 'fee_charge_code', label: 'Fee Rent Manager charge code', placeholder: 'BILLFEE' },
+  { type: 'heading', label: 'Statement text', help: 'Leave blank to use the default text shown. You can use {address}, {phone}, {email}, {property}.' },
+  { name: 'payment_text', label: 'Payment section', type: 'textarea', full: true, placeholder: DEFAULT_TEXT.payment },
+  { name: 'questions_text', label: '"Questions?" box', type: 'textarea', full: true, placeholder: DEFAULT_TEXT.questions },
+  { name: 'footer_text', label: 'Footer', type: 'textarea', full: true, placeholder: DEFAULT_TEXT.footer },
+  { type: 'heading', label: 'Other' },
   { name: 'notes', label: 'Notes', type: 'textarea', full: true },
 ];
 
@@ -130,12 +150,12 @@ async function propertiesPage() {
     })}`);
   onActions(div, {
     add: () => formModal({
-      title: 'Add property', fields: PROPERTY_FIELDS,
+      title: 'Add property', fields: PROPERTY_FIELDS, wide: true, values: { day_count: 'meter', due_days: 28 },
       onSubmit: async (d) => { const p = await api('/admin/properties', { method: 'POST', body: d }); location.hash = `#/properties/${p.id}/utilities`; toast('Property added. Next, set up its utilities.'); },
     }),
     edit: ({ id }) => editProperty(props.find((p) => p.id == id), propertiesPage),
     del: async ({ id }) => {
-      if (!(await confirmBox('Delete this property? Only possible if it has no units or bills.'))) return;
+      if (!(await confirmBox('Delete this property? Only possible if it has no units or billing batches.'))) return;
       await api(`/admin/properties/${id}`, { method: 'DELETE' }); toast('Deleted'); propertiesPage();
     },
   });
@@ -143,14 +163,14 @@ async function propertiesPage() {
 
 function editProperty(p, after) {
   formModal({
-    title: 'Edit property', fields: PROPERTY_FIELDS, values: p,
+    title: 'Edit property', fields: PROPERTY_FIELDS, values: p, wide: true,
     onSubmit: async (d) => { await api(`/admin/properties/${p.id}`, { method: 'PUT', body: d }); toast('Saved'); after(); },
   });
 }
 
 async function propertyDetail(id, tab) {
   const p = await api(`/admin/properties/${id}`);
-  const tabs = [['units', 'Units'], ['tenants', 'Tenants'], ['utilities', 'Utilities & split rules'], ['bills', 'Utility bills']];
+  const tabs = [['units', 'Units'], ['tenants', 'Tenants'], ['utilities', 'Utilities & split rules'], ['billing', 'Billing']];
   const div = mount(`<div class="topbar"><div><a href="#/properties" class="small">← Properties</a><h1>${esc(p.name)}</h1>
       <div class="muted small">${esc([p.address, p.city, p.state, p.zip].filter(Boolean).join(', '))}
       ${p.rm_property_code ? ` · RM code: ${esc(p.rm_property_code)}` : ''}</div></div>
@@ -163,7 +183,7 @@ async function propertyDetail(id, tab) {
   if (tab === 'units') await unitsView(el, opts);
   else if (tab === 'tenants') await tenantsView(el, opts);
   else if (tab === 'utilities') await utilitiesView(el, opts);
-  else await billsView(el, opts);
+  else await runsView(el, opts);
 }
 
 // --------------------------------------------------------------- units
@@ -408,7 +428,7 @@ const UTILITY_FIELDS = [
   { name: 'utility_name', label: 'Utility', required: true, placeholder: 'Water, Sewer, Trash, Gas, Electric…' },
   { name: 'rm_charge_code', label: 'Rent Manager charge code', help: 'The charge type in Rent Manager, e.g. WATER' },
   { name: 'recovery_pct', label: 'Recovery % billed to residents', type: 'number', min: 0, help: 'Example: 85 means 15% is deducted for common areas' },
-  { name: 'admin_fee_cents', label: 'Admin / billing fee per resident ($)', type: 'money', min: 0, help: 'Flat amount added to each resident\'s charge' },
+  { name: 'tax_pct', label: 'Tax % added to residents\' share', type: 'number', min: 0, help: 'e.g. 10 for a 10% utility tax on water. Use 0 for none.' },
   { name: 'w_sqft', label: 'Weight: square footage', type: 'number', min: 0 },
   { name: 'w_bedrooms', label: 'Weight: bedrooms', type: 'number', min: 0 },
   { name: 'w_occupants', label: 'Weight: number of occupants', type: 'number', min: 0 },
@@ -416,6 +436,7 @@ const UTILITY_FIELDS = [
   { name: 'vacancy_mode', label: 'Vacancy handling', type: 'select', required: true,
     options: [['owner', 'Owner absorbs vacant units'], ['occupied', 'Split among occupied units only']] },
   { name: 'vacant_occupants', label: 'Occupants assumed for vacant units', type: 'number', min: 0, help: 'Only used with the occupants weight and "owner absorbs"' },
+  { name: 'sort_order', label: 'Order on statement', type: 'number', help: 'Lower numbers are listed first.' },
   { name: 'active', label: 'Active', type: 'checkbox' },
   { name: 'notes', label: 'Notes', type: 'textarea', full: true },
 ];
@@ -439,7 +460,7 @@ async function utilitiesView(el, { propertyId }) {
         { label: 'Recovery', value: (u) => `${u.recovery_pct}%`, cls: 'num' },
         { label: 'Split by', value: describeWeights },
         { label: 'Vacancy', value: (u) => (u.vacancy_mode === 'owner' ? 'Owner absorbs' : 'Occupied only') },
-        { label: 'Admin fee', value: (u) => money(u.admin_fee_cents), cls: 'num' },
+        { label: 'Tax', value: (u) => (Number(u.tax_pct) ? `${u.tax_pct}%` : '—'), cls: 'num' },
       ],
       rows: utils,
       actions: (u) => `<button class="link" data-action="edit" data-id="${u.id}">Edit</button>
@@ -450,7 +471,7 @@ async function utilitiesView(el, { propertyId }) {
   const reload = () => utilitiesView(el, { propertyId });
   onActions(div, {
     add: () => formModal({ title: 'Add utility', fields: UTILITY_FIELDS, wide: true,
-      values: { recovery_pct: 100, w_sqft: 100, vacancy_mode: 'owner', vacant_occupants: 1, active: true, admin_fee_cents: 0 },
+      values: { recovery_pct: 100, w_sqft: 100, vacancy_mode: 'owner', vacant_occupants: 1, active: true, tax_pct: 0 },
       onSubmit: async (d) => { await api('/admin/utilities', { method: 'POST', body: { ...d, property_id: propertyId } }); toast('Utility added'); reload(); } }),
     edit: ({ id }) => formModal({ title: 'Edit utility', fields: UTILITY_FIELDS, wide: true, values: utils.find((u) => u.id == id),
       onSubmit: async (d) => { await api(`/admin/utilities/${id}`, { method: 'PUT', body: d }); toast('Saved'); reload(); } }),
@@ -461,168 +482,24 @@ async function utilitiesView(el, { propertyId }) {
   });
 }
 
-// --------------------------------------------------------------- bills
-
-function billsTable(bills, showProperty = true) {
-  return table({
-    columns: [
-      ...(showProperty ? [{ label: 'Property', value: 'property_name' }] : []),
-      { label: 'Utility', value: (b) => `<a href="#/bills/${b.id}">${esc(b.utility_name)}</a>` },
-      { label: 'Service period', value: (b) => `${date(b.period_start)} – ${date(b.period_end)}` },
-      { label: 'Vendor', value: 'vendor' },
-      { label: 'Bill total', value: (b) => money(b.total_cents), cls: 'num' },
-      { label: 'Billed to residents', value: (b) => (b.charge_count ? money(b.charged_cents) : '—'), cls: 'num' },
-      { label: 'Status', value: (b) => statusBadge(b.status) },
-    ],
-    rows: bills,
-    actions: (b) => `<a href="#/bills/${b.id}">Open</a>`,
-    empty: 'No utility bills yet.',
-  });
-}
-
-async function billsView(el, { propertyId, filters = {} }) {
-  const qs = new URLSearchParams();
-  if (propertyId || filters.property_id) qs.set('property_id', propertyId || filters.property_id);
-  if (filters.status) qs.set('status', filters.status);
-  const [bills, props] = await Promise.all([api('/admin/bills?' + qs), propertyId ? [] : getProperties()]);
-  const div = document.createElement('div');
-  div.innerHTML = `<div class="topbar"><form class="row filters" data-filters>
-      ${propertyId ? '' : `<select name="property_id"><option value="">All properties</option>
-        ${props.map((p) => `<option value="${p.id}" ${String(filters.property_id) === String(p.id) ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`}
-      <select name="status">${[['', 'Any status'], ['draft', 'Draft'], ['calculated', 'Calculated'], ['posted', 'Posted']]
-        .map(([v, l]) => `<option value="${v}" ${filters.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select></form>
-      <div class="row"><a class="btn" href="/api/admin/export/bills.csv?${qs}">Export CSV</a>
-      <button class="primary" data-action="add">+ Add utility bill</button></div></div>
-    ${billsTable(bills, !propertyId)}`;
-  el.replaceChildren(div);
-  div.querySelectorAll('[data-filters] select').forEach((s) => s.addEventListener('change', () =>
-    billsView(el, { propertyId, filters: Object.fromEntries(new FormData(s.form)) })));
-  onActions(div, { add: () => billForm({ property_id: propertyId }, (b) => (location.hash = `#/bills/${b.id}`)) });
-}
-
-async function billForm(values, after) {
-  const [props, utils] = await Promise.all([getProperties(), getUtilities()]);
-  if (!props.length) return toast('Add a property first', true);
-  const utilOptions = (pid) => utils.filter((u) => u.property_id == pid && (u.active || u.id == values.property_utility_id)).map((u) => [u.id, u.utility_name]);
-  const startProp = values.property_id || props[0].id;
-  const fields = [
-    { name: 'property_id', label: 'Property', type: 'select', required: true, options: propertyOptions(props) },
-    { name: 'property_utility_id', label: 'Utility', type: 'select', required: true, options: utilOptions(startProp),
-      help: 'Utilities and split rules are set up on the property\'s "Utilities" tab.' },
-    { name: 'vendor', label: 'Utility company' },
-    { name: 'vendor_account', label: 'Utility account #' },
-    { name: 'period_start', label: 'Service period start', type: 'date', required: true },
-    { name: 'period_end', label: 'Service period end', type: 'date', required: true },
-    { name: 'total_cents', label: 'Bill total ($)', type: 'money', required: true, min: 0 },
-    { name: 'statement_date', label: 'Statement date', type: 'date' },
-    { name: 'charge_date', label: 'Charge date for Rent Manager', type: 'date', help: 'Transaction date used in the export. Defaults to today.' },
-    { name: 'notes', label: 'Notes', type: 'textarea', full: true },
-  ];
-  const m = formModal({
-    title: values.id ? 'Edit utility bill' : 'Add utility bill', fields, values: { ...values, property_id: startProp },
-    intro: values.id && values.status !== 'draft' ? '<div class="notice small">Saving changes clears the current calculation. Click Calculate again afterwards.</div>' : '',
-    onSubmit: async (d) => {
-      const b = values.id
-        ? await api(`/admin/bills/${values.id}`, { method: 'PUT', body: d })
-        : await api('/admin/bills', { method: 'POST', body: d });
-      toast('Bill saved');
-      after(b);
-    },
-  });
-  const propSel = m.querySelector('[name=property_id]');
-  const utilSel = m.querySelector('[name=property_utility_id]');
-  propSel.addEventListener('change', () => {
-    utilSel.innerHTML = utilOptions(propSel.value).map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('');
-  });
-}
-
-async function billDetail(id) {
-  const b = await api(`/admin/bills/${id}`);
-  const s = b.summary;
-  const basisLabel = { sqft: 'Sq ft', bedrooms: 'Bedrooms', occupants: 'Occupants', equal: 'Equal' };
-  const chargesTotal = b.charges.reduce((t, c) => t + c.amount_cents, 0);
-  const div = mount(`<div class="topbar"><div><a href="#/bills" class="small">← Utility bills</a>
-      <h1>${esc(b.property_name)} — ${esc(b.utility_name)} ${statusBadge(b.status)}</h1>
-      <div class="muted small">Service ${date(b.period_start)} – ${date(b.period_end)}${b.vendor ? ` · ${esc(b.vendor)}` : ''}${b.vendor_account ? ` #${esc(b.vendor_account)}` : ''}</div></div>
-      <div class="row">
-        ${b.status !== 'posted' ? '<button data-action="edit">Edit</button>' : ''}
-        ${b.status !== 'posted' ? `<button class="primary" data-action="calc">${b.status === 'calculated' ? 'Recalculate' : 'Calculate charges'}</button>` : ''}
-        ${b.status === 'calculated' ? '<button class="primary" data-action="post">Post charges</button>' : ''}
-        ${b.status === 'posted' ? `<a class="btn primary" href="/api/admin/export/charges.csv?bill_id=${b.id}">Export CSV for Rent Manager</a><button data-action="unpost">Unpost</button>` : ''}
-        ${b.status !== 'posted' ? '<button class="danger" data-action="del">Delete</button>' : ''}
-      </div></div>
-    ${b.status === 'draft' ? '<div class="notice">Click <b>Calculate charges</b> to split this bill among residents. Review the results, then <b>Post</b> to make them visible to residents and ready to export.</div>' : ''}
-    ${b.status === 'calculated' ? '<div class="notice">Review the charges below. When they look right, click <b>Post charges</b>. Residents see posted charges, and posted charges can be exported. If you change tenants or units, click Recalculate.</div>' : ''}
-    <div class="grid two mb">
-      <div class="card"><h2>Bill</h2><dl class="kv">
-        <dt>Bill total</dt><dd>${money(b.total_cents)}</dd>
-        <dt>Statement date</dt><dd>${date(b.statement_date) || '—'}</dd>
-        <dt>Charge date (export)</dt><dd>${date(b.charge_date) || '—'}</dd>
-        <dt>RM charge code</dt><dd>${esc(b.rm_charge_code || b.utility_name)}</dd>
-        ${b.notes ? `<dt>Notes</dt><dd>${esc(b.notes)}</dd>` : ''}</dl></div>
-      <div class="card"><h2>Calculation</h2>${s ? `<dl class="kv">
-        <dt>Days in period</dt><dd>${s.period_days}</dd>
-        <dt>Split by</dt><dd>${Object.entries(s.weights).map(([k, w]) => `${basisLabel[k]} (${w})`).join(' + ')}</dd>
-        <dt>Recovery</dt><dd>${s.recovery_pct}% → ${money(s.billable_cents)} billable</dd>
-        <dt>Common area (owner)</dt><dd>${money(s.common_area_cents)}</dd>
-        <dt>Vacant units (owner)</dt><dd>${money(s.vacancy_cents)}</dd>
-        <dt>Resident share</dt><dd>${money(s.resident_share_cents)} across ${s.resident_count} residents</dd>
-        <dt>Admin fees</dt><dd>${money(s.admin_fees_cents)}</dd>
-        <dt><b>Total billed to residents</b></dt><dd><b>${money(s.billed_to_residents_cents)}</b></dd>
-        <dt>Owner cost</dt><dd>${money(s.owner_cost_cents)}</dd></dl>` : '<p class="muted">Not calculated yet.</p>'}</div>
-    </div>
-    <h2>Resident charges</h2>
-    ${table({
-      columns: [
-        { label: 'Unit', value: 'unit_number' },
-        { label: 'Resident', value: (c) => `${esc(fullName(c))}<div class="muted small">${esc(c.account_number || '')}</div>` },
-        { label: 'Occupied', value: (c) => `${c.days}/${c.period_days} days<div class="muted small">${date(c.move_in)}${c.move_out ? ' – ' + date(c.move_out) : ''}</div>` },
-        { label: 'Sq ft / BR / people', value: (c) => `${Number(c.sqft).toLocaleString()} / ${c.bedrooms} / ${c.occupants}` },
-        { label: 'Utility share', value: (c) => money(c.share_cents), cls: 'num' },
-        { label: 'Admin fee', value: (c) => money(c.admin_fee_cents), cls: 'num' },
-        { label: 'Total', value: (c) => `<b>${money(c.amount_cents)}</b>`, cls: 'num' },
-        { label: 'Details', value: (c) => `<details><summary>How</summary>${(c.detail?.bases || []).map((d) =>
-          `<div class="small">${basisLabel[d.basis]} (${d.weight_pct}% of billable): factor ${d.factor} × ${d.days} days = ${d.ratio_pct}% → ${money(d.share_cents)}</div>`).join('')}</details>` },
-      ],
-      rows: b.charges,
-      empty: b.status === 'draft' ? 'Not calculated yet.' : 'No residents occupied a unit during this service period.',
-      footer: b.charges.length ? `<tr><td colspan="4">Total</td><td class="num">${money(b.charges.reduce((t, c) => t + c.share_cents, 0))}</td>
-        <td class="num">${money(b.charges.reduce((t, c) => t + c.admin_fee_cents, 0))}</td><td class="num">${money(chargesTotal)}</td><td></td></tr>` : '',
-    })}`);
-  const reload = () => billDetail(id);
-  onActions(div, {
-    edit: () => billForm(b, reload),
-    calc: async () => { await api(`/admin/bills/${id}/calculate`, { method: 'POST' }); toast('Charges calculated'); reload(); },
-    post: async () => { await api(`/admin/bills/${id}/post`, { method: 'POST' }); toast('Charges posted'); reload(); },
-    unpost: async () => {
-      if (!(await confirmBox('Unpost this bill? Residents will no longer see these charges until it is posted again.', 'Unpost'))) return;
-      await api(`/admin/bills/${id}/unpost`, { method: 'POST' }); toast('Bill unposted'); reload();
-    },
-    del: async () => {
-      if (!(await confirmBox('Delete this bill and its calculated charges?'))) return;
-      await api(`/admin/bills/${id}`, { method: 'DELETE' }); toast('Bill deleted'); location.hash = '#/bills';
-    },
-  });
-}
-
 // --------------------------------------------------------------- exports
 
 async function exportsPage() {
   const props = await getProperties();
   const first = new Date(); first.setDate(1);
   const div = mount(`<div class="topbar"><h1>Export to Rent Manager</h1></div>
-    <div class="card mb"><h2>Resident charges (posted bills)</h2>
-      <p class="muted small">One row per resident per utility bill. Columns: PropertyCode, Unit, TenantAccount, TenantName, ChargeType, Amount,
-        TransactionDate, Comment, PeriodStart, PeriodEnd, UtilityShare, AdminFee. In Rent Manager, map these columns in your charge import template.
-        (Column names can be changed in <code>functions/api/[[path]].js</code> → <code>RM_CHARGE_COLUMNS</code>.)</p>
+    <div class="card mb"><h2>Resident charges (finalized statements)</h2>
+      <p class="muted small">One row per charge on each statement (Water, Sewer, tax, fee), using each utility's Rent Manager charge code.
+        Columns: PropertyCode, Unit, TenantAccount, TenantName, ChargeType, Amount, TransactionDate, DueDate, Comment, PeriodStart, PeriodEnd.
+        Map these columns in your Rent Manager charge import template. You can also export a single batch from its page.</p>
       <form class="form-grid" data-export>
         <div class="field"><label>Property</label><select name="property_id"><option value="">All properties</option>
           ${props.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div>
         <div class="field"></div>
         <div class="field"><label>Charge date from</label><input type="date" name="from" value="${first.toISOString().slice(0, 10)}"></div>
         <div class="field"><label>Charge date to</label><input type="date" name="to"></div>
-        <div class="field full"><label><input type="checkbox" name="unexported" value="1" checked> Only charges not exported before</label>
-          <label><input type="checkbox" name="mark" value="1" checked> Mark these charges as exported</label></div>
+        <div class="field full"><label><input type="checkbox" name="unexported" value="1" checked> Only statements not exported before</label>
+          <label><input type="checkbox" name="mark" value="1" checked> Mark these statements as exported</label></div>
         <div class="full"><button class="primary" type="submit">Download CSV</button></div>
       </form></div>
     <div class="card"><h2>Other exports</h2><div class="row">
@@ -630,8 +507,7 @@ async function exportsPage() {
       <a class="btn" href="/api/admin/export/units.csv">Units</a>
       <a class="btn" href="/api/admin/export/properties.csv">Properties</a>
       <a class="btn" href="/api/admin/export/utilities.csv">Utility split rules</a>
-      <a class="btn" href="/api/admin/export/bills.csv">Utility bills</a>
-      <a class="btn" href="/api/admin/export/charges.csv?status=all">All charges (including unposted)</a></div></div>`);
+      </div></div>`);
   div.querySelector('[data-export]').addEventListener('submit', (e) => {
     e.preventDefault();
     const qs = new URLSearchParams([...new FormData(e.target)].filter(([, v]) => v !== ''));
@@ -641,28 +517,36 @@ async function exportsPage() {
 
 // --------------------------------------------------------------- settings
 
-async function settingsPage() {
+async function settingsPage(tab) {
+  const tabs = [['email', 'Company & email'], ['staff', 'Staff accounts']];
+  const div0 = mount(`<div class="topbar"><h1>Settings</h1></div>
+    <div class="tabs">${tabs.map(([k, l]) => `<a href="#/settings/${k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}</div>
+    <div data-tab></div>`);
+  const el = div0.querySelector('[data-tab]');
+  if (tab === 'email') return emailSettingsView(el);
   const admins = await api('/admin/admins');
-  const div = mount(`<div class="topbar"><h1>Settings</h1></div>
+  const div = document.createElement('div');
+  el.replaceChildren(div);
+  div.innerHTML = `
     <div class="topbar"><h2 class="m0">Staff accounts</h2><div class="row">
       <button data-action="password">Change my password</button><button class="primary" data-action="add">+ Add staff user</button></div></div>
     ${table({
       columns: [{ label: 'Name', value: 'name' }, { label: 'Email', value: 'email' }, { label: 'Created', value: (a) => date(a.created_at) }],
       rows: admins,
       actions: (a) => (a.id === currentUser.id ? '<span class="muted small">you</span>' : `<button class="link danger" data-action="del" data-id="${a.id}">Remove</button>`),
-    })}`);
+    })}`;
   onActions(div, {
     add: () => formModal({ title: 'Add staff user', fields: [
       { name: 'name', label: 'Name' }, { name: 'email', label: 'Email', type: 'email', required: true },
       { name: 'password', label: 'Temporary password (8+ characters)', type: 'password', required: true, full: true, autocomplete: 'new-password' }],
-      onSubmit: async (d) => { await api('/admin/admins', { method: 'POST', body: d }); toast('Staff user added'); settingsPage(); } }),
+      onSubmit: async (d) => { await api('/admin/admins', { method: 'POST', body: d }); toast('Staff user added'); settingsPage('staff'); } }),
     password: () => formModal({ title: 'Change my password', fields: [
       { name: 'current_password', label: 'Current password', type: 'password', required: true, full: true, autocomplete: 'current-password' },
       { name: 'new_password', label: 'New password (8+ characters)', type: 'password', required: true, full: true, autocomplete: 'new-password' }],
       onSubmit: async (d) => { await api('/admin/admins/me/password', { method: 'PUT', body: d }); toast('Password changed'); } }),
     del: async ({ id }) => {
       if (!(await confirmBox('Remove this staff user?', 'Remove'))) return;
-      await api(`/admin/admins/${id}`, { method: 'DELETE' }); toast('Removed'); settingsPage();
+      await api(`/admin/admins/${id}`, { method: 'DELETE' }); toast('Removed'); settingsPage('staff');
     },
   });
 }

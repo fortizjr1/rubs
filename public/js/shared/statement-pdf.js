@@ -58,7 +58,7 @@ function drawStatement(page, s) {
   page.text(String(p.name || '').toUpperCase(), L, 44, { size: 21, weight: 'bold', color: WHITE });
   page.text([p.address, cityLine].filter(Boolean).join(', '), L, 62, { size: 8.5, color: WHITE });
   page.text(contact, L, 76, { size: 8.5, color: WHITE });
-  page.text('UTILITY STATEMENT', R, 44, { size: 12, weight: 'bold', color: WHITE, align: 'right' });
+  page.text(s.final ? 'FINAL UTILITY STATEMENT' : 'UTILITY STATEMENT', R, 44, { size: 12, weight: 'bold', color: s.final ? ORANGE : WHITE, align: 'right' });
   if (s.company_name) page.text(`Managed by ${s.company_name}`, R, 61, { size: 8.5, color: WHITE, align: 'right' });
   if (s.preview) page.text('PREVIEW – NOT FINAL', R, 112, { size: 8, weight: 'bold', color: '#b91c1c', align: 'right' });
 
@@ -72,7 +72,8 @@ function drawStatement(page, s) {
 
   // Account box
   const rows = [['Account number', s.account_number || '—'], ['Unit', s.unit_number], ['Statement date', longDate(s.statement_date)], ['Due date', longDate(s.due_date)]];
-  page.rect(339, 116, R - 339, 62, GRAY_BG);
+  if (s.final && s.move_out) rows.push(['Moved out', longDate(s.move_out)]);
+  page.rect(339, 116, R - 339, 6 + rows.length * 14, GRAY_BG);
   rows.forEach(([k, v], i) => {
     const y = 129 + i * 14;
     page.text(k, 346, y, { size: 8, color: MUTED });
@@ -92,7 +93,8 @@ function drawStatement(page, s) {
   page.line(L, y + 6, R, y + 6, GRAY_LINE, 1);
   y += 22;
   page.text(`Service period  ${longDate(s.period_start)} – ${longDate(s.period_end)}  (${s.period_days} days)`, L + 8, y, { size: 8, color: MUTED });
-  if (s.days < s.period_days) page.text(`You were billed for ${s.days} of ${s.period_days} days`, R - 8, y, { size: 8, color: MUTED, align: 'right' });
+  if (s.days < s.period_days) page.text(`${s.final ? 'Final bill: ' : ''}You were billed for ${s.days} of ${s.period_days} days`, R - 8, y, { size: 8, color: MUTED, align: 'right' });
+  else if (s.final) page.text('Final bill', R - 8, y, { size: 8, color: MUTED, align: 'right' });
   y += 8;
   s.lines.forEach((ln, i) => {
     if (i % 2 === 0) page.rect(L, y, R - L, 18, GRAY_BG);

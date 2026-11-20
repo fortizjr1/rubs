@@ -75,10 +75,16 @@ const RESOURCES = {
       email: ['email', 'Email'], phone: ['text', 'Phone'], account_number: ['text', 'Account number'],
       mailing_address: ['text', 'Address'], move_in: ['date', 'Move-in date', true], move_out: ['date', 'Move-out date'],
       occupants: ['int', 'Number of occupants'], notes: ['text', 'Notes'],
+      forwarding_address: ['text', 'Forwarding address'],
     },
+    // final_pending: moved out (within the last 90 days) but no finalized billing batch covers the
+    // move-out date yet, so their final bill still has to be produced.
     list: `SELECT t.id, t.unit_id, t.first_name, t.last_name, t.email, t.phone, t.account_number,
-             t.mailing_address, t.move_in, t.move_out, t.occupants, t.notes, t.created_at,
+             t.mailing_address, t.forwarding_address, t.move_in, t.move_out, t.occupants, t.notes, t.created_at,
              (t.password_hash IS NOT NULL) AS portal_active,
+             (t.move_out IS NOT NULL AND t.move_out <= date('now') AND t.move_out >= date('now', '-90 days')
+               AND NOT EXISTS (SELECT 1 FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id
+                 WHERE s.tenant_id = t.id AND r.status = 'finalized' AND r.period_end >= t.move_out)) AS final_pending,
              u.unit_number, u.property_id, u.sqft, u.bedrooms, p.name AS property_name,
              CASE WHEN t.move_in > date('now') THEN 'future'
                   WHEN t.move_out IS NOT NULL AND t.move_out < date('now') THEN 'past'
@@ -147,9 +153,9 @@ async function listResource(db, res, url) {
     res.search.forEach(() => args.push(`%${q}%`));
   }
   const status = url.searchParams.get('tenant_status');
-  if (res.table === 'tenants' && ['current', 'past', 'future'].includes(status)) {
-    sql = `SELECT * FROM (${sql}) WHERE status = ?`;
-    args.push(status);
+  if (res.table === 'tenants' && ['current', 'past', 'future', 'final_pending'].includes(status)) {
+    sql = status === 'final_pending' ? `SELECT * FROM (${sql}) WHERE final_pending = 1` : `SELECT * FROM (${sql}) WHERE status = ?`;
+    if (status !== 'final_pending') args.push(status);
     return (await db.prepare(sql + ' ORDER BY property_name, unit_number COLLATE NOCASE').bind(...args).all()).results;
   }
   sql += ` ORDER BY ${res.order} LIMIT 5000`;
@@ -385,6 +391,38 @@ async function deleteTenants(db, ids) {
   }
   if (stmts.length) await db.batch(stmts);
   return { deleted: ok.length, skipped: [...blocked.values()] };
+}
+
+/**
+ * Mass edit tenants: set the number of occupants and/or the move-out date (or clear it).
+ * A move-out before a tenant's move-in is skipped and reported.
+ */
+async function bulkUpdateTenants(db, payload) {
+  const ids = cleanIds(payload);
+  const setOcc = payload.occupants !== undefined && payload.occupants !== null && payload.occupants !== '';
+  const occupants = setOcc ? coerce('int', payload.occupants, 'Number of people') : null;
+  if (setOcc && (occupants < 0 || occupants > 50)) throw new HttpError(400, 'Number of people must be between 0 and 50');
+  const clearOut = payload.clear_move_out === true;
+  const moveOut = clearOut ? null : coerce('date', payload.move_out, 'Move-out date');
+  if (!setOcc && !moveOut && !clearOut) throw new HttpError(400, 'Choose what to change');
+  const skipped = [];
+  let ok = ids;
+  if (moveOut) {
+    ok = [];
+    for (const c of chunks(ids)) {
+      const rows = (await db.prepare(`SELECT id, move_in, TRIM(COALESCE(first_name,'') || ' ' || last_name) AS name FROM tenants WHERE id IN (${inList(c)})`).bind(...c).all()).results;
+      for (const r of rows) {
+        if (moveOut < r.move_in) skipped.push({ id: r.id, name: r.name, reason: `moved in ${r.move_in}, after the move-out date` });
+        else ok.push(r.id);
+      }
+    }
+  }
+  const sets = [];
+  const vals = [];
+  if (setOcc) { sets.push('occupants = ?'); vals.push(occupants); }
+  if (moveOut || clearOut) { sets.push('move_out = ?'); vals.push(moveOut); }
+  if (ok.length) await db.batch(chunks(ok, 80).map((c) => db.prepare(`UPDATE tenants SET ${sets.join(', ')} WHERE id IN (${inList(c)})`).bind(...vals, ...c)));
+  return { updated: ok.length, skipped };
 }
 
 /** Deletes units that have no tenants (current or past); others are skipped with the reason. */
@@ -654,6 +692,9 @@ async function adminDashboard(db) {
       (SELECT COUNT(*) FROM tenants t JOIN units u ON u.id = t.unit_id JOIN properties p ON p.id = u.property_id
          WHERE p.active = 1 AND t.move_out BETWEEN date('now') AND date('now','+30 days')) AS move_outs_30d,
       (SELECT COUNT(*) FROM billing_runs WHERE status != 'finalized') AS open_batches,
+      (SELECT COUNT(*) FROM tenants t WHERE t.move_out IS NOT NULL AND t.move_out <= date('now') AND t.move_out >= date('now', '-90 days')
+         AND NOT EXISTS (SELECT 1 FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id
+           WHERE s.tenant_id = t.id AND r.status = 'finalized' AND r.period_end >= t.move_out)) AS final_pending,
       (SELECT COUNT(*) FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id JOIN tenants t ON t.id = s.tenant_id
          WHERE r.status = 'finalized' AND s.emailed_at IS NULL AND t.email IS NOT NULL) AS unsent_statements,
       (SELECT COUNT(*) FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id
@@ -836,6 +877,7 @@ async function handle({ request, env }) {
 
   if (name === 'tenants' && id === 'import' && method === 'POST') return json(await importTenants(db, await body(request), session.user_id));
   if (name === 'units' && id === 'import' && method === 'POST') return json(await importUnits(db, await body(request), session.user_id));
+  if (name === 'tenants' && id === 'bulk-update' && method === 'POST') return json(await bulkUpdateTenants(db, await body(request)));
   if (name === 'tenants' && id === 'bulk-delete' && method === 'POST') return json(await deleteTenants(db, cleanIds(await body(request))));
   if (name === 'units' && id === 'bulk-delete' && method === 'POST') return json(await deleteUnits(db, cleanIds(await body(request))));
   if (name === 'imports') {

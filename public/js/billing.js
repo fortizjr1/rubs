@@ -229,7 +229,7 @@ export async function runDetailPage(root, id) {
     ${table({
       columns: [
         { label: 'Unit', value: 'unit_number' },
-        { label: 'Resident', value: (st) => `${esc(fullName(st))}<div class="muted small">${esc(st.account_number || 'no account #')}</div>` },
+        { label: 'Resident', value: (st) => `${esc(fullName(st))}${st.move_out && st.move_out <= r.period_end ? ` <span class="badge draft" title="Moved out ${date(st.move_out)}">final bill</span>` : ''}<div class="muted small">${esc(st.account_number || 'no account #')}</div>` },
         { label: 'Days', value: (st) => (st.days < r.period_days ? `<b>${st.days}</b>/${r.period_days}` : `${st.days}`), cls: 'num' },
         ...utilNames.map((n) => ({ label: n, value: (st) => money(lineAmt(st, (l) => l.kind === 'utility' && l.label === n)), cls: 'num' })),
         ...(hasTax ? [{ label: 'Tax', value: (st) => money(lineAmt(st, (l) => l.kind === 'tax')), cls: 'num' }] : []),

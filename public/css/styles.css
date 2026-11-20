@@ -296,3 +296,4 @@ button.ghost:hover { background: rgba(255,255,255,.1); }
 a.btn.block { width: 100%; justify-content: center; }
 .pay-card { border-top: 3px solid #f59e0b; }
 .pay-card h3 .icon { color: #f59e0b; }
+.bulk-edit { display: grid; gap: .5rem; margin: .5rem 0 1rem; } .bulk-opt { display: flex; align-items: center; gap: .5rem; font-weight: 400; margin: .25rem 0 0; } .bulk-edit [data-for] { padding-left: 1.6rem; }

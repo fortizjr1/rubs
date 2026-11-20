@@ -15,10 +15,11 @@ function howCalculated(st) {
     ${c.tax_cents ? `Tax: ${money(c.tax_cents)}.` : ''}</div>`)).join('');
 }
 
-function statementCard(st) {
+function statementCard(st, moveOut) {
+  const final = moveOut && moveOut <= st.period_end;
   return `<article class="stmt">
     <div class="stmt-head">
-      <div><div class="stmt-title">${date(st.period_start)} – ${date(st.period_end)}</div>
+      <div><div class="stmt-title">${date(st.period_start)} – ${date(st.period_end)}${final ? ' <span class="badge draft">Final bill</span>' : ''}</div>
         <div class="muted small">Statement ${date(st.statement_date)} · Due by ${date(st.due_date)}</div></div>
       <div class="stmt-total">${money(st.total_cents)}</div>
     </div>
@@ -84,7 +85,7 @@ export async function startResident(app, user, logout, stopPreview) {
         <section>
           <div class="section-head"><h2>Statements</h2>
             <span class="muted small">${statements.length} statement${statements.length === 1 ? '' : 's'} · ${money(ytd)} billed in ${year}</span></div>
-          ${statements.length ? statements.map(statementCard).join('') : '<div class="card empty">Your statements will appear here once the office posts them.</div>'}
+          ${statements.length ? statements.map((st) => statementCard(st, me.move_out)).join('') : '<div class="card empty">Your statements will appear here once the office posts them.</div>'}
         </section>
         <aside>
           <div class="card side-card"><h3>${ICONS.user}<span>My account</span></h3><dl class="kv">

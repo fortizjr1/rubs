@@ -85,7 +85,7 @@ async function route() {
   try {
     switch (parts[0]) {
       case 'properties': return parts[1] ? await propertyDetail(parts[1], parts[2] || 'units') : await propertiesPage();
-      case 'tenants': return await listPage('Tenants', (el) => tenantsView(el, {}));
+      case 'tenants': return await listPage('Tenants', (el) => tenantsView(el, { filters: parts[1] === 'final' ? { tenant_status: 'final_pending' } : {} }));
       case 'billing': return parts[1] ? await runDetailPage(root, parts[1]) : await listPage('Billing', (el) => runsView(el, {}));
       case 'exports': return await exportsPage();
       case 'settings': return await settingsPage(parts[1] || 'email');
@@ -132,6 +132,7 @@ async function dashboard() {
       ${stat('Upcoming move-ins', c.upcoming_move_ins, '#/tenants')}
       ${stat('Move-outs next 30 days', c.move_outs_30d, '#/tenants')}
       ${stat('Batches not finalized', c.open_batches, '#/billing')}
+      ${stat('Final bills pending', c.final_pending, '#/tenants/final')}
       ${stat('Statements not emailed', c.unsent_statements, '#/billing')}
       ${stat('Statements not exported', c.unexported_statements, '#/exports')}
     </div>
@@ -381,6 +382,7 @@ async function tenantForm({ title, values = {}, propertyId, onSave }) {
     { name: 'mailing_address', label: 'Address', full: true },
     { name: 'move_in', label: 'Move-in date', type: 'date', required: true },
     { name: 'move_out', label: 'Move-out date', type: 'date', help: 'Leave blank for current residents.' },
+    { name: 'forwarding_address', label: 'Forwarding address', full: true, help: 'Printed on the final bill instead of the apartment address.' },
     { name: 'notes', label: 'Notes', type: 'textarea', full: true },
   ];
   const firstUnits = unitOptions(startProp);
@@ -426,7 +428,7 @@ async function tenantsView(el, { propertyId, filters = {} }) {
         ${propertyId ? '' : `<select name="property_id"><option value="">All active properties</option>
           ${props.map((p) => `<option value="${p.id}" ${String(filters.property_id) === String(p.id) ? 'selected' : ''}>${esc(propertyLabel(p))}</option>`).join('')}</select>`}
         <select name="tenant_status">
-          ${[['', 'All residents'], ['current', 'Current'], ['future', 'Future move-ins'], ['past', 'Moved out']]
+          ${[['', 'All residents'], ['current', 'Current'], ['future', 'Future move-ins'], ['past', 'Moved out'], ['final_pending', 'Final bill pending']]
             .map(([v, l]) => `<option value="${v}" ${filters.tenant_status === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
         <input name="q" placeholder="Search name, email, unit, account…" value="${esc(filters.q || '')}">
         <button type="submit">Search</button></form>
@@ -445,7 +447,8 @@ async function tenantsView(el, { propertyId, filters = {} }) {
         { label: 'Move-in', value: (t) => date(t.move_in) },
         { label: 'Move-out', value: (t) => date(t.move_out) },
         { label: 'People', value: 'occupants', cls: 'num' },
-        { label: 'Status', value: (t) => statusBadge(t.status) + (t.portal_active ? ' <span class="badge" title="Resident portal activated">portal</span>' : '') },
+        { label: 'Status', value: (t) => statusBadge(t.status) + (t.final_pending ? ' <span class="badge draft" title="Moved out: their move-out date is not covered by a finalized billing batch yet">final bill pending</span>' : '')
+          + (t.portal_active ? ' <span class="badge" title="Resident portal activated">portal</span>' : '') },
       ],
       rows: tenants,
       actions: (t) => `<button class="link" data-action="viewAs" data-id="${t.id}" title="See the resident portal as this resident">View as resident</button>
@@ -455,7 +458,10 @@ async function tenantsView(el, { propertyId, filters = {} }) {
         <button class="link danger" data-action="del" data-id="${t.id}">Delete</button>`,
       empty: 'No tenants found. Add one, or import a CSV.',
     })}
-    <p class="muted small">${tenants.length} tenant${tenants.length === 1 ? '' : 's'}</p>`;
+    <p class="muted small">${tenants.length} tenant${tenants.length === 1 ? '' : 's'}</p>
+    ${filters.tenant_status === 'final_pending' ? `<div class="notice small">These residents moved out in the last 90 days, but no finalized billing batch covers their
+      move-out date yet. Their final bill is created automatically in the next batch for their property whose service period includes the move-out date.
+      Add a forwarding address (Edit or Move out) so it prints on the final bill.</div>` : ''}`;
   el.replaceChildren(div);
   const reload = (f = filters) => tenantsView(el, { propertyId, filters: f });
   div.querySelector('[data-filters]').addEventListener('submit', (e) => {
@@ -467,7 +473,7 @@ async function tenantsView(el, { propertyId, filters = {} }) {
     noun: 'tenant', ids, endpoint: '/admin/tenants/bulk-delete', after: () => reload(),
     names: ids.map((i) => fullName(tenants.find((t) => t.id === i) || {})),
     note: 'Tenants who already have billing statements are skipped. For those, set a move-out date instead. Their units are not deleted.',
-  })));
+  }), (ids) => bulkEditTenantsModal(ids, tenants, () => reload())));
   div.querySelector('[data-selbar]').addEventListener('click', (e) => { if (e.target.matches('[data-bulk-clear]')) sel.clear(); });
   onActions(div, {
     viewAs: ({ id }) => viewAsResident(id),
@@ -479,9 +485,11 @@ async function tenantsView(el, { propertyId, filters = {} }) {
     moveout: ({ id }) => {
       const t = tenants.find((x) => x.id == id);
       formModal({ title: `Move out ${fullName(t)}`, submitLabel: 'Save move-out',
-        intro: '<p class="muted small">Charges for bills that overlap this date will be prorated by days occupied (the move-out day counts as occupied).</p>',
-        fields: [{ name: 'move_out', label: 'Move-out date', type: 'date', required: true }],
-        values: { move_out: new Date().toISOString().slice(0, 10) },
+        intro: '<p class="muted small">The next billing batch whose service period includes this date is prorated to it and becomes this resident\'s <b>final bill</b>.</p>',
+        fields: [{ name: 'move_out', label: 'Move-out date', type: 'date', required: true, full: true },
+          { name: 'forwarding_address', label: 'Forwarding address (for the final bill)', type: 'textarea', full: true,
+            placeholder: '123 New St, Apt 4, Tallahassee, FL 32301' }],
+        values: { move_out: new Date().toISOString().slice(0, 10), forwarding_address: t.forwarding_address },
         onSubmit: async (d) => { await api(`/admin/tenants/${id}`, { method: 'PUT', body: d }); toast('Move-out saved'); reload(); } });
     },
     resetPortal: async ({ id }) => {
@@ -652,18 +660,72 @@ function bulkDeleteModal({ noun, ids, names, endpoint, note, after }) {
 
 function skippedModal(title, skipped) {
   modal(`<h2>${esc(title)}</h2>
-    <p>${skipped.length} could not be deleted, so they were kept:</p>
+    <p>${skipped.length} ${title.startsWith('Updated') ? 'could not be updated' : 'could not be deleted, so they were kept'}:</p>
     <div class="log small">${skipped.map((x) => `<div><b>${esc(x.name)}</b>: ${esc(x.reason)}</div>`).join('')}</div>
     <div class="footer"><button class="primary" data-close>OK</button></div>`);
 }
 
 /** Selection bar shown above a list while rows are checked. */
-function selectionBar(noun, onDelete) {
+function selectionBar(noun, onDelete, onEdit) {
   return (bar, ids) => {
     bar.innerHTML = `<b>${ids.length}</b> ${noun}${ids.length === 1 ? '' : 's'} selected
+      ${onEdit ? '<button data-bulk-edit>Edit selected</button>' : ''}
       <button class="danger" data-bulk-delete>Delete selected</button><button class="link" data-bulk-clear>Clear selection</button>`;
     bar.querySelector('[data-bulk-delete]').onclick = () => onDelete(ids);
+    if (onEdit) bar.querySelector('[data-bulk-edit]').onclick = () => onEdit(ids);
   };
+}
+
+/** Mass edit: number of people and/or move-out date for the selected tenants. */
+function bulkEditTenantsModal(ids, tenants, after) {
+  const n = ids.length;
+  const picked = ids.map((i) => tenants.find((t) => t.id === i)).filter(Boolean);
+  const m = modal(`<h2>Edit ${n} tenant${n === 1 ? '' : 's'}</h2>
+    <p class="small muted">${picked.slice(0, 12).map((t) => esc(fullName(t))).join(', ')}${n > 12 ? `, and ${n - 12} more` : ''}</p>
+    <p class="small">Tick what you want to change. Everything else stays as it is.</p>
+    <div class="bulk-edit">
+      <label class="bulk-opt"><input type="checkbox" data-on="occ"> <b>Number of people in unit</b></label>
+      <div class="field" data-for="occ" hidden><input type="number" min="0" max="50" step="1" data-occ placeholder="e.g. 2"></div>
+      <label class="bulk-opt"><input type="checkbox" data-on="out"> <b>Move-out date</b></label>
+      <div data-for="out" hidden>
+        <div class="field"><input type="date" data-out></div>
+        <label class="small"><input type="checkbox" data-clear> Remove the move-out date instead (they're staying)</label>
+        <p class="small muted">Their next billing batch is prorated to this date and becomes their final bill.</p>
+      </div>
+    </div>
+    <div class="error" hidden></div>
+    <div class="footer"><button data-close>Cancel</button><button class="primary" data-go>Update ${n} tenant${n === 1 ? '' : 's'}</button></div>`);
+  m.querySelectorAll('[data-on]').forEach((c) => c.addEventListener('change', () => {
+    m.querySelector(`[data-for="${c.dataset.on}"]`).hidden = !c.checked;
+  }));
+  const clear = m.querySelector('[data-clear]');
+  clear.addEventListener('change', () => { m.querySelector('[data-out]').disabled = clear.checked; });
+  m.querySelector('[data-go]').addEventListener('click', async () => {
+    const err = m.querySelector('.error');
+    err.hidden = true;
+    const body = { ids };
+    if (m.querySelector('[data-on="occ"]').checked) {
+      const v = m.querySelector('[data-occ]').value;
+      if (v === '') { err.textContent = 'Enter the number of people.'; err.hidden = false; return; }
+      body.occupants = Number(v);
+    }
+    if (m.querySelector('[data-on="out"]').checked) {
+      if (clear.checked) body.clear_move_out = true;
+      else {
+        const d = m.querySelector('[data-out]').value;
+        if (!d) { err.textContent = 'Pick the move-out date, or tick "Remove the move-out date".'; err.hidden = false; return; }
+        body.move_out = d;
+      }
+    }
+    if (body.occupants === undefined && !body.move_out && !body.clear_move_out) { err.textContent = 'Tick at least one thing to change.'; err.hidden = false; return; }
+    try {
+      const r = await api('/admin/tenants/bulk-update', { method: 'POST', body });
+      closeModal();
+      after();
+      if (r.skipped.length) skippedModal(`Updated ${r.updated} tenant${r.updated === 1 ? '' : 's'}`, r.skipped);
+      else toast(`Updated ${r.updated} tenant${r.updated === 1 ? '' : 's'}`);
+    } catch (e) { err.textContent = e.message; err.hidden = false; }
+  });
 }
 
 async function importHistoryModal(kind, after) {

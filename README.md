@@ -107,6 +107,14 @@ In Cloudflare go to **Security → WAF → Rate limiting rules** (the free plan 
 - Billing history, statements and exports are kept. You can still create a final billing batch for it, and its residents can still see past statements.
 - Click **Reactivate** to undo.
 
+**Move-outs and final bills**
+- The app has no live link to Rent Manager. It knows about a move-out once the date is entered:
+  - **Move out** on a tenant row,
+  - **Edit selected** (mass edit: move-out date and/or number of people for many tenants), or
+  - re-importing your tenant list from Rent Manager. Tenants are matched by account number, so Move Out and Occupants are updated. Doing this before each billing cycle is the easiest routine.
+- A statement is the resident's **final bill** when their move-out date falls within the batch's service period. The PDF says "FINAL UTILITY STATEMENT", shows the move-out date and prints the **forwarding address** if one is entered. The email subject starts with "FINAL BILL -".
+- **Final bills pending** (Dashboard tile, and the Tenants filter) lists residents who moved out in the last 90 days whose move-out isn't covered by a finalized batch yet.
+
 **Fixing a mistake**
 - **Wrong amount or dates:** if the batch is finalized, click **Reopen**. Then click **Edit bill** and recalculate.
 - **Undo a whole batch:** click **Delete batch**. This removes the batch and every resident statement in it, including from the resident portal.

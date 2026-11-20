@@ -1,0 +1,16 @@
+{
+  "name": "rubs-billing",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "RUBS utility billing for property management on Cloudflare Pages + D1",
+  "scripts": {
+    "dev": "wrangler pages dev",
+    "db:migrate:local": "wrangler d1 migrations apply rubs-billing-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply rubs-billing-db --remote",
+    "test": "node --test tests/*.test.js"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0"
+  }
+}

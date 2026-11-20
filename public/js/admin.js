@@ -1,7 +1,7 @@
 // Admin app: dashboard, properties, units, tenants, utilities, billing, exports, settings.
 import {
   api, esc, money, date, fullName, toast, modal, closeModal, confirmBox, formModal, table, parseCSV, onActions, bindSelection,
-  ICONS, initials, toggleGroups,
+  rowActions, resetPage, ICONS, initials, toggleGroups,
 } from './ui.js';
 import { runsTable, runsView, runForm, runDetailPage, emailSettingsView } from './billing.js';
 import { DEFAULT_TEXT } from './shared/statement-pdf.js';
@@ -21,13 +21,13 @@ export function startAdmin(app, user, logout) {
     <nav class="sidebar">
       <div class="side-brand"><span class="logo-mark">${ICONS.drop}</span>
         <div><div class="side-title">Utility Billing</div>${user.company_name ? `<div class="side-sub">${esc(user.company_name)}</div>` : ''}</div></div>
-      <div class="side-nav">${NAV.map(([k, l, icon]) => `<a href="#/${k}" data-nav="${k}">${ICONS[icon]}<span>${l}</span></a>`).join('')}</div>
+      <div class="side-nav">${NAV.map(([k, l, icon]) => `<a href="#/${k}" data-nav="${k}" title="${l}">${ICONS[icon]}<span>${l}</span></a>`).join('')}</div>
       <div class="side-section">Preview</div>
-      <a href="#" id="viewAs" class="side-link">${ICONS.eye}<span>Log in as a resident</span></a>
+      <a href="#" id="viewAs" class="side-link" title="Log in as a resident">${ICONS.eye}<span>Log in as a resident</span></a>
       <div class="spacer"></div>
       <div class="side-user"><span class="avatar">${esc(initials(user.name || user.email))}</span>
         <div class="side-user-text"><div class="side-user-name">${esc(user.name || 'Staff')}</div><div class="side-user-email">${esc(user.email)}</div></div></div>
-      <a href="#" id="logout" class="side-link">${ICONS.logout}<span>Sign out</span></a>
+      <a href="#" id="logout" class="side-link" title="Sign out">${ICONS.logout}<span>Sign out</span></a>
     </nav>
     <main class="main" id="view"></main></div>`;
   root = app.querySelector('#view');
@@ -202,6 +202,7 @@ async function propertiesPage() {
         { label: 'Occupancy', value: (p) => occupancy(p), cls: 'num' },
       ],
       rows: props,
+      pageKey: 'properties',
       actions: (p) => `<button class="link" data-action="edit" data-id="${p.id}">Edit</button>
         ${p.active ? `<button class="link" data-action="deactivate" data-id="${p.id}">Mark inactive</button>`
           : `<button class="link" data-action="reactivate" data-id="${p.id}">Reactivate</button>`}
@@ -328,6 +329,7 @@ async function unitsView(el, { propertyId }) {
         { label: 'Current resident', value: (u) => u.current_tenant ? esc(u.current_tenant) : '<span class="muted">Vacant</span>' },
       ],
       rows: units,
+      pageKey: `units-${propertyId || 'all'}`,
       actions: (u) => `<button class="link" data-action="edit" data-id="${u.id}">Edit</button>
         <button class="link danger" data-action="del" data-id="${u.id}">Delete</button>`,
       empty: 'No units yet. Click Import CSV to load all units at once (with square footage and bedrooms), or add them one at a time.',
@@ -441,30 +443,29 @@ async function tenantsView(el, { propertyId, filters = {} }) {
     ${table({
       select: true,
       columns: [
-        { label: 'Name', value: (t) => esc(fullName(t)) },
-        { label: propertyId ? 'Unit' : 'Property / unit', value: (t) => esc(propertyId ? t.unit_number : `${t.property_name} — ${t.unit_number}`) },
-        { label: 'Account', value: 'account_number' },
-        { label: 'Contact', value: (t) => `${esc(t.email || '')}<div class="muted small">${esc(t.phone || '')}</div>` },
-        { label: 'Move-in', value: (t) => date(t.move_in) },
-        { label: 'Move-out', value: (t) => date(t.move_out) },
+        { label: 'Name', value: (t) => `<b>${esc(fullName(t))}</b>${t.account_number ? `<div class="muted small">Acct ${esc(t.account_number)}</div>` : ''}` },
+        { label: 'Unit', value: (t) => `${esc(t.unit_number)}${propertyId ? '' : `<div class="muted small">${esc(t.property_name)}</div>`}` },
+        { label: 'Contact', cls: 'contact', value: (t) => `${esc(t.email || '')}<div class="muted small">${esc(t.phone || '')}</div>` },
+        { label: 'Dates', cls: 'dates', value: (t) => `<div><span class="muted small">In</span> ${date(t.move_in)}</div>${t.move_out ? `<div><span class="muted small">Out</span> ${date(t.move_out)}</div>` : ''}` },
         { label: 'People', cls: 'num', value: (t) => `<span class="inline-edit"><input type="number" class="inline-num" min="0" max="50" step="1"
             value="${esc(t.occupants)}" data-occ="${t.id}" data-was="${esc(t.occupants)}" aria-label="Number of people for ${esc(fullName(t))}"
             title="Type a number, then press Enter or Tab to save"><span class="inline-ok" aria-hidden="true"></span></span>` },
         { label: 'Status', value: (t) => statusBadge(t.status) + (t.final_pending ? ' <span class="badge draft" title="Moved out: their move-out date is not covered by a finalized billing batch yet">final bill pending</span>' : '') },
         { label: 'Signed up', value: signedUpCell },
-        { label: 'Portal', value: portalCell, cls: 'portal-col' },
+        { label: 'Portal', value: portalCell, cls: 'portal-col hide-lg' },
       ],
       rows: tenants,
-      actions: (t) => `<button class="link" data-action="viewAs" data-id="${t.id}" title="See the resident portal as this resident">View as resident</button>
-        <button class="link" data-action="edit" data-id="${t.id}">Edit</button>
-        ${!t.move_out ? `<button class="link" data-action="moveout" data-id="${t.id}">Move out</button>` : ''}
-        ${t.portal_active ? `<button class="link" data-action="resetPortal" data-id="${t.id}">Reset login</button>` : ''}
-        ${t.locked_at ? `<button class="link" data-action="unlock" data-id="${t.id}">Unlock</button>`
-          : `<button class="link danger" data-action="lock" data-id="${t.id}">Lock</button>`}
-        <button class="link danger" data-action="del" data-id="${t.id}">Delete</button>`,
+      pageKey: `tenants-${propertyId || 'all'}`,
+      actions: (t) => rowActions([`<button class="link" data-action="edit" data-id="${t.id}">Edit</button>`], [
+        `<button class="link" data-action="viewAs" data-id="${t.id}">View as resident</button>`,
+        !t.move_out && `<button class="link" data-action="moveout" data-id="${t.id}">Move out</button>`,
+        t.portal_active && `<button class="link" data-action="resetPortal" data-id="${t.id}">Reset login</button>`,
+        t.locked_at ? `<button class="link" data-action="unlock" data-id="${t.id}">Unlock portal</button>`
+          : `<button class="link danger" data-action="lock" data-id="${t.id}">Lock portal</button>`,
+        `<button class="link danger" data-action="del" data-id="${t.id}">Delete</button>`]),
       empty: 'No tenants found. Add one, or import a CSV.',
     })}
-    <p class="muted small">${tenants.length} tenant${tenants.length === 1 ? '' : 's'}</p>
+    ${tenants.length && tenants.length <= 25 ? `<p class="muted small">${tenants.length} tenant${tenants.length === 1 ? '' : 's'}</p>` : ''}
     ${filters.tenant_status === 'final_pending' ? `<div class="notice small">These residents moved out in the last 90 days, but no finalized billing batch covers their
       move-out date yet. Their final bill is created automatically in the next batch for their property whose service period includes the move-out date.
       Add a forwarding address (Edit or Move out) so it prints on the final bill.</div>` : ''}`;
@@ -472,6 +473,7 @@ async function tenantsView(el, { propertyId, filters = {} }) {
   const reload = (f = filters) => tenantsView(el, { propertyId, filters: f });
   div.querySelector('[data-filters]').addEventListener('submit', (e) => {
     e.preventDefault();
+    resetPage(`tenants-${propertyId || 'all'}`);
     reload(Object.fromEntries(new FormData(e.target)));
   });
   div.querySelectorAll('[data-filters] select').forEach((s) => s.addEventListener('change', () => s.form.requestSubmit()));

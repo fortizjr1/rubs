@@ -156,15 +156,116 @@ export function formModal({ title, fields, values = {}, submitLabel = 'Save', on
  * columns: [{label, value: (row) => html | 'key', cls}] — cell values from keys are escaped.
  * select: true adds a checkbox column (rows need an id); use bindSelection() to handle it.
  */
-export function table({ columns, rows, actions, empty = 'Nothing here yet.', footer, select = false }) {
+export function table({ columns, rows, actions, empty = 'Nothing here yet.', footer, select = false, pageKey }) {
   if (!rows.length) return `<div class="table-wrap"><div class="empty">${empty}</div></div>`;
-  return `<div class="table-wrap"><table>
-    <thead><tr>${select ? '<th class="sel"><input type="checkbox" data-select-all aria-label="Select all"></th>' : ''}${columns.map((c) => `<th class="${c.cls || ''}">${esc(c.label)}</th>`).join('')}${actions ? '<th></th>' : ''}</tr></thead>
-    <tbody>${rows.map((r) => `<tr>${select ? `<td class="sel"><input type="checkbox" data-select value="${esc(r.id)}" aria-label="Select"></td>` : ''}${columns.map((c) => `<td class="${c.cls || ''}">${typeof c.value === 'function' ? c.value(r) : esc(r[c.value])}</td>`).join('')}
+  // pageKey: show the rows a page at a time, with a pager underneath. All rows stay in the page
+  // (hidden when off-page), so selection, inline edits and row actions work the same.
+  const paged = pageKey && rows.length > PAGE_SIZES[0];
+  const size = paged ? pageSize() : 0;
+  const page = paged ? clampPage(pageKey, rows.length, size) : 0;
+  const off = (i) => paged && size && (i < page * size || i >= (page + 1) * size);
+  return `<div class="table-wrap${paged ? ' paged' : ''}" ${paged ? `data-page-key="${esc(pageKey)}"` : ''}><div class="table-scroll"><table class="responsive">
+    <thead><tr>${select ? '<th class="sel"><input type="checkbox" data-select-all aria-label="Select all on this page"></th>' : ''}${columns.map((c) => `<th class="${c.cls || ''}">${esc(c.label)}</th>`).join('')}${actions ? '<th class="actions"></th>' : ''}</tr></thead>
+    <tbody>${rows.map((r, i) => `<tr${off(i) ? ' class="off-page"' : ''}>${select ? `<td class="sel"><input type="checkbox" data-select value="${esc(r.id)}" aria-label="Select"></td>` : ''}${columns.map((c) => `<td class="${c.cls || ''}" data-label="${esc(c.label)}">${typeof c.value === 'function' ? c.value(r) : esc(r[c.value])}</td>`).join('')}
       ${actions ? `<td class="actions">${actions(r)}</td>` : ''}</tr>`).join('')}</tbody>
     ${footer ? `<tfoot>${footer}</tfoot>` : ''}
-  </table></div>`;
+  </table></div>${paged ? `<div class="pager" data-pager>${pagerHtml(rows.length, page, size)}</div>` : ''}</div>`;
 }
+
+// ---- pagination (rows per page is remembered in this browser; the page per list until a reload of the app)
+
+const PAGE_SIZES = [25, 50, 100];
+const pages = {};
+const pageSize = () => {
+  const v = localStorage.getItem('rowsPerPage');
+  return v !== null && (Number(v) === 0 || PAGE_SIZES.includes(Number(v))) ? Number(v) : PAGE_SIZES[0];
+};
+const clampPage = (key, total, size) => (pages[key] = size ? Math.min(Math.max(pages[key] || 0, 0), Math.ceil(total / size) - 1) : 0);
+/** Go back to page 1 of a list (e.g. after the search or a filter changes). */
+export const resetPage = (key) => { pages[key] = 0; };
+
+function pagerHtml(total, page, size) {
+  const count = size ? Math.ceil(total / size) : 1;
+  const from = size ? page * size + 1 : 1;
+  const to = size ? Math.min(total, (page + 1) * size) : total;
+  const btn = (p, label, aria) => `<button type="button" class="pg" data-goto="${p}" ${p < 0 || p >= count || p === page ? 'disabled' : ''} aria-label="${aria}">${label}</button>`;
+  // Page buttons: first, last, and two either side of the current page.
+  const nums = [];
+  for (let p = 0; p < count; p++) {
+    if (p === 0 || p === count - 1 || Math.abs(p - page) <= 2) nums.push(p);
+    else if (nums[nums.length - 1] !== '…') nums.push('…');
+  }
+  return `<div class="pager-info">Showing <b>${from}–${to}</b> of <b>${total}</b></div>
+    <label class="pager-size">Rows per page <select data-page-size>${[...PAGE_SIZES, 0].map((n) => `<option value="${n}" ${n === size ? 'selected' : ''}>${n || 'All'}</option>`).join('')}</select></label>
+    ${count > 1 ? `<nav class="pager-nav" aria-label="Pages">${btn(page - 1, '‹ Prev', 'Previous page')}
+      ${nums.map((p) => (p === '…' ? '<span class="pg-gap">…</span>' : `<button type="button" class="pg${p === page ? ' current' : ''}" data-goto="${p}" ${p === page ? 'aria-current="page"' : ''}>${p + 1}</button>`)).join('')}
+      ${btn(page + 1, 'Next ›', 'Next page')}</nav>` : ''}`;
+}
+
+function showPage(wrap, page) {
+  const rows = [...wrap.querySelectorAll(':scope > .table-scroll > table > tbody > tr')];
+  const size = pageSize();
+  const key = wrap.dataset.pageKey;
+  pages[key] = page;
+  page = clampPage(key, rows.length, size);
+  rows.forEach((tr, i) => tr.classList.toggle('off-page', Boolean(size) && (i < page * size || i >= (page + 1) * size)));
+  wrap.querySelector('[data-pager]').innerHTML = pagerHtml(rows.length, page, size);
+  wrap.dispatchEvent(new CustomEvent('pagechange', { bubbles: true }));
+}
+
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-pager] [data-goto]');
+  if (!b) return;
+  const wrap = b.closest('.paged');
+  showPage(wrap, Number(b.dataset.goto));
+  if (wrap.getBoundingClientRect().top < 0) wrap.scrollIntoView({ block: 'start' });
+});
+document.addEventListener('change', (e) => {
+  if (!e.target.matches('[data-pager] [data-page-size]')) return;
+  const wrap = e.target.closest('.paged');
+  const first = pages[wrap.dataset.pageKey] * pageSize(); // keep the first visible row in view
+  localStorage.setItem('rowsPerPage', e.target.value);
+  const size = pageSize();
+  showPage(wrap, size ? Math.floor(first / size) : 0);
+});
+
+// ---- row "More" menus: <details class="row-menu">. The panel is fixed-positioned so the table's
+// scroll box can't cut it off.
+
+/** Row actions: the first items stay visible, the rest go in a "More" menu. */
+export function rowActions(visible, more) {
+  const items = more.filter(Boolean);
+  return `${visible.filter(Boolean).join('')}${items.length ? `<details class="row-menu"><summary class="link" title="More actions">More ▾</summary>
+    <div class="menu-panel" role="menu">${items.join('')}</div></details>` : ''}`;
+}
+
+const closeMenus = (except) => document.querySelectorAll('details.row-menu[open]').forEach((d) => { if (d !== except) d.open = false; });
+function placeMenu(d) {
+  const panel = d.querySelector('.menu-panel');
+  const r = d.querySelector('summary').getBoundingClientRect();
+  const box = d.closest('.table-scroll')?.getBoundingClientRect();
+  // Close it once its row has scrolled out of sight.
+  if (r.bottom < 0 || r.top > window.innerHeight || (box && (r.bottom < box.top || r.top > box.bottom))) { d.open = false; return; }
+  panel.style.right = `${Math.max(8, window.innerWidth - r.right)}px`;
+  panel.style.top = `${r.bottom + 4}px`;
+  const h = panel.offsetHeight;
+  if (r.bottom + 4 + h > window.innerHeight - 8 && r.top - h - 4 > 8) panel.style.top = `${r.top - h - 4}px`;
+}
+document.addEventListener('toggle', (e) => {
+  const d = e.target;
+  if (!(d instanceof HTMLDetailsElement) || !d.classList.contains('row-menu') || !d.open) return;
+  closeMenus(d);
+  placeMenu(d);
+}, true);
+// Close on any click outside the menu's own toggle (clicking an item runs it, then closes the menu).
+document.addEventListener('click', (e) => {
+  const own = e.target.closest('details.row-menu');
+  if (own && e.target.closest('summary')) return closeMenus(own);
+  closeMenus();
+}, true);
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenus(); });
+window.addEventListener('resize', () => closeMenus());
+document.addEventListener('scroll', () => document.querySelectorAll('details.row-menu[open]').forEach(placeMenu), true);
 
 /**
  * Checkbox selection for a table rendered with select: true. Shows `bar` when something is
@@ -173,12 +274,15 @@ export function table({ columns, rows, actions, empty = 'Nothing here yet.', foo
 export function bindSelection(root, bar, render) {
   const selected = new Set();
   const boxes = () => [...root.querySelectorAll('[data-select]')];
+  // "Select all" works on the rows shown on the current page.
+  const shown = () => boxes().filter((b) => !b.closest('tr').classList.contains('off-page'));
   const all = root.querySelector('[data-select-all]');
   const update = () => {
     boxes().forEach((b) => { b.checked = selected.has(Number(b.value)); b.closest('tr').classList.toggle('selected', b.checked); });
     if (all) {
-      all.checked = selected.size > 0 && selected.size === boxes().length;
-      all.indeterminate = selected.size > 0 && selected.size < boxes().length;
+      const n = shown().filter((b) => b.checked).length;
+      all.checked = n > 0 && n === shown().length;
+      all.indeterminate = n > 0 && n < shown().length;
     }
     bar.hidden = selected.size === 0;
     if (selected.size) render(bar, [...selected]);
@@ -189,10 +293,11 @@ export function bindSelection(root, bar, render) {
       if (e.target.checked) selected.add(id); else selected.delete(id);
       update();
     } else if (e.target.matches('[data-select-all]')) {
-      boxes().forEach((b) => (e.target.checked ? selected.add(Number(b.value)) : selected.delete(Number(b.value))));
+      shown().forEach((b) => (e.target.checked ? selected.add(Number(b.value)) : selected.delete(Number(b.value))));
       update();
     }
   });
+  root.addEventListener('pagechange', update);
   const api = { ids: () => [...selected], clear: () => { selected.clear(); update(); } };
   update();
   return api;

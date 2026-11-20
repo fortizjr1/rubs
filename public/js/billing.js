@@ -230,6 +230,7 @@ export async function runDetailPage(root, id) {
           : `<span class="muted small">${esc(st.email)}</span>` },
       ],
       rows: r.statements,
+      pageKey: `run-${id}`,
       actions: (st) => `<a href="/api/admin/statements/${st.id}/pdf" target="_blank" rel="noopener">PDF</a>
         ${r.status === 'finalized' && st.email ? `<button class="link" data-action="emailOne" data-id="${st.id}">${st.emailed_at ? 'Resend' : 'Email'}</button>` : ''}`,
       empty: r.status === 'draft' ? 'Click Calculate to create the statements.' : 'No statements.',

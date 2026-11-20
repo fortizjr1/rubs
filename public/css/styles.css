@@ -297,3 +297,9 @@ a.btn.block { width: 100%; justify-content: center; }
 .pay-card { border-top: 3px solid #f59e0b; }
 .pay-card h3 .icon { color: #f59e0b; }
 .bulk-edit { display: grid; gap: .5rem; margin: .5rem 0 1rem; } .bulk-opt { display: flex; align-items: center; gap: .5rem; font-weight: 400; margin: .25rem 0 0; } .bulk-edit [data-for] { padding-left: 1.6rem; }
+.inline-edit { display: inline-flex; align-items: center; gap: .3rem; justify-content: flex-end; }
+.inline-num { width: 4.2rem; text-align: right; padding: .3rem .45rem; border-color: #e4e7ec; background: #fff; font-variant-numeric: tabular-nums; }
+tr:hover .inline-num { border-color: #b8c0cc; }
+.inline-num:disabled { opacity: .6; }
+.inline-ok { width: 1rem; color: var(--ok); font-weight: 700; }
+.inline-ok.saving::after { content: '…'; color: var(--muted); }

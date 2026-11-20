@@ -446,7 +446,9 @@ async function tenantsView(el, { propertyId, filters = {} }) {
         { label: 'Contact', value: (t) => `${esc(t.email || '')}<div class="muted small">${esc(t.phone || '')}</div>` },
         { label: 'Move-in', value: (t) => date(t.move_in) },
         { label: 'Move-out', value: (t) => date(t.move_out) },
-        { label: 'People', value: 'occupants', cls: 'num' },
+        { label: 'People', cls: 'num', value: (t) => `<span class="inline-edit"><input type="number" class="inline-num" min="0" max="50" step="1"
+            value="${esc(t.occupants)}" data-occ="${t.id}" data-was="${esc(t.occupants)}" aria-label="Number of people for ${esc(fullName(t))}"
+            title="Type a number, then press Enter or Tab to save"><span class="inline-ok" aria-hidden="true"></span></span>` },
         { label: 'Status', value: (t) => statusBadge(t.status) + (t.final_pending ? ' <span class="badge draft" title="Moved out: their move-out date is not covered by a finalized billing batch yet">final bill pending</span>' : '')
           + (t.portal_active ? ' <span class="badge" title="Resident portal activated">portal</span>' : '') },
       ],
@@ -475,6 +477,7 @@ async function tenantsView(el, { propertyId, filters = {} }) {
     note: 'Tenants who already have billing statements are skipped. For those, set a move-out date instead. Their units are not deleted.',
   }), (ids) => bulkEditTenantsModal(ids, tenants, () => reload())));
   div.querySelector('[data-selbar]').addEventListener('click', (e) => { if (e.target.matches('[data-bulk-clear]')) sel.clear(); });
+  bindInlinePeople(div, tenants);
   onActions(div, {
     viewAs: ({ id }) => viewAsResident(id),
     history: () => importHistoryModal('tenants', () => reload()),
@@ -676,15 +679,57 @@ function selectionBar(noun, onDelete, onEdit) {
   };
 }
 
+/**
+ * Inline editing of the People column: each row saves its own number when you press Enter
+ * or leave the field. Esc puts the previous value back.
+ */
+function bindInlinePeople(root, tenants) {
+  const save = async (input) => {
+    const was = input.dataset.was;
+    const raw = input.value.trim();
+    if (raw === was) return;
+    const mark = input.nextElementSibling;
+    const n = Number(raw);
+    if (raw === '' || !Number.isInteger(n) || n < 0 || n > 50) {
+      input.value = was;
+      toast('Number of people must be a whole number from 0 to 50', true);
+      return;
+    }
+    input.disabled = true;
+    mark.className = 'inline-ok saving';
+    try {
+      await api(`/admin/tenants/${input.dataset.occ}`, { method: 'PUT', body: { occupants: n } });
+      input.dataset.was = String(n);
+      const t = tenants.find((x) => String(x.id) === input.dataset.occ);
+      if (t) t.occupants = n;
+      mark.className = 'inline-ok done';
+      mark.textContent = '✓';
+      setTimeout(() => { mark.className = 'inline-ok'; mark.textContent = ''; }, 2500);
+    } catch (e) {
+      input.value = was;
+      mark.className = 'inline-ok';
+      toast(`Not saved: ${e.message}`, true);
+    }
+    input.disabled = false;
+  };
+  root.addEventListener('change', (e) => { if (e.target.matches('[data-occ]')) save(e.target); });
+  root.addEventListener('keydown', (e) => {
+    if (!e.target.matches('[data-occ]')) return;
+    if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); }
+    if (e.key === 'Escape') { e.target.value = e.target.dataset.was; e.target.blur(); }
+  });
+}
+
 /** Mass edit: number of people and/or move-out date for the selected tenants. */
 function bulkEditTenantsModal(ids, tenants, after) {
   const n = ids.length;
   const picked = ids.map((i) => tenants.find((t) => t.id === i)).filter(Boolean);
   const m = modal(`<h2>Edit ${n} tenant${n === 1 ? '' : 's'}</h2>
     <p class="small muted">${picked.slice(0, 12).map((t) => esc(fullName(t))).join(', ')}${n > 12 ? `, and ${n - 12} more` : ''}</p>
-    <p class="small">Tick what you want to change. Everything else stays as it is.</p>
+    <p class="small">Tick what you want to change. Everything else stays as it is.
+      To give each unit its own number of people, type it straight into the <b>People</b> column instead.</p>
     <div class="bulk-edit">
-      <label class="bulk-opt"><input type="checkbox" data-on="occ"> <b>Number of people in unit</b></label>
+      <label class="bulk-opt"><input type="checkbox" data-on="occ"> <b>Set the same number of people for all of them</b></label>
       <div class="field" data-for="occ" hidden><input type="number" min="0" max="50" step="1" data-occ placeholder="e.g. 2"></div>
       <label class="bulk-opt"><input type="checkbox" data-on="out"> <b>Move-out date</b></label>
       <div data-for="out" hidden>

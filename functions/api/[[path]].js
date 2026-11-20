@@ -691,6 +691,10 @@ async function handle({ request, env }) {
       } else if (s?.user_type === 'tenant') {
         const t = await db.prepare('SELECT id, email, first_name, last_name FROM tenants WHERE id = ?').bind(s.user_id).first();
         if (t) user = { type: 'tenant', id: t.id, email: t.email, name: `${t.first_name || ''} ${t.last_name}`.trim() };
+        if (t && s.impersonated_by) {
+          const a = await db.prepare('SELECT name, email FROM admins WHERE id = ?').bind(s.impersonated_by).first();
+          user.preview = { staff: a ? a.name || a.email : 'Staff', expires_at: s.expires_at };
+        }
       }
       // Company name is shown on the sign-in page (it is printed on every statement anyway).
       const company = await db.prepare("SELECT value FROM settings WHERE key = 'company_name'").first();
@@ -732,6 +736,18 @@ async function handle({ request, env }) {
       const token = await createSession(db, 'tenant', t.id);
       return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(token) });
     }
+    if (action === 'stop-view-as' && method === 'POST') {
+      // Leave a "log in as a resident" preview and restore the staff member's own session.
+      const s = await getSession(db, request);
+      if (!s?.impersonated_by) throw new HttpError(400, 'You are not viewing the portal as a resident');
+      const back = s.return_token
+        ? await db.prepare("SELECT token FROM sessions WHERE token = ? AND user_type = 'admin' AND user_id = ? AND expires_at > ?")
+          .bind(s.return_token, s.impersonated_by, new Date().toISOString()).first()
+        : null;
+      await db.prepare('DELETE FROM sessions WHERE token = ?').bind(s.token).run();
+      if (!back) return json({ ok: true, relogin: true }, 200, { 'Set-Cookie': sessionCookie('', 0) });
+      return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(back.token) });
+    }
     if (action === 'logout' && method === 'POST') {
       const token = readSessionToken(request);
       if (token) await db.prepare('DELETE FROM sessions WHERE token = ?').bind(token).run();
@@ -751,7 +767,7 @@ async function handle({ request, env }) {
       const me = await db.prepare(
         `SELECT t.id, t.first_name, t.last_name, t.email, t.phone, t.account_number, t.mailing_address,
                 t.move_in, t.move_out, t.occupants, u.unit_number, u.sqft, u.bedrooms,
-                p.name AS property_name, p.address, p.city, p.state, p.zip
+                p.name AS property_name, p.address, p.city, p.state, p.zip, p.phone AS office_phone, p.email AS office_email
          FROM tenants t JOIN units u ON u.id = t.unit_id JOIN properties p ON p.id = u.property_id WHERE t.id = ?`,
       ).bind(tid).first();
       const statements = (await db.prepare(
@@ -775,6 +791,9 @@ async function handle({ request, env }) {
       const [s] = await statementRenderData(db, { statementId: seg[2], tenantId: tid, onlyFinalized: true });
       if (!s) throw new HttpError(404, 'Statement not found');
       return pdfResponse(s);
+    }
+    if (session.impersonated_by && method !== 'GET') {
+      throw new HttpError(403, 'Not available in the staff preview. Residents make this change themselves.');
     }
     if (seg[1] === 'profile' && method === 'PUT') {
       const b = await body(request);
@@ -820,6 +839,13 @@ async function handle({ request, env }) {
     if (method === 'POST' && id && action === 'undo') return json(await undoImport(db, id));
   }
   if (name === 'import-columns' && method === 'GET') return json({ tenants: TENANT_COLUMNS, units: UNIT_COLUMNS });
+  if (name === 'tenants' && id && action === 'view-as' && method === 'POST') {
+    // "Log in as a resident": a read-only, 2-hour resident session that remembers this staff session.
+    const t = await db.prepare('SELECT id FROM tenants WHERE id = ?').bind(id).first();
+    if (!t) throw new HttpError(404, 'Tenant not found');
+    const token = await createSession(db, 'tenant', t.id, { impersonatedBy: session.user_id, returnToken: session.token, hours: 2 });
+    return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(token, 2 * 3600) });
+  }
   if (name === 'tenants' && id && action === 'reset-portal' && method === 'POST') {
     await db.batch([
       db.prepare('UPDATE tenants SET password_hash = NULL WHERE id = ?').bind(id),

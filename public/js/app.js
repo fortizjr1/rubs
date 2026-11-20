@@ -13,8 +13,17 @@ async function boot() {
   company = status.company_name || '';
   if (status.needsSetup) return setupScreen();
   if (!status.user) return loginScreen(location.hash === '#staff' ? 'staff' : 'resident');
-  if (status.user.type === 'admin') return startAdmin(app, status.user, logout);
-  return startResident(app, status.user, logout);
+  const user = { ...status.user, company_name: company };
+  if (user.type === 'admin') return startAdmin(app, user, logout);
+  return startResident(app, user, logout, stopPreview);
+}
+
+// Leave a staff "log in as a resident" preview and return to the staff screens.
+async function stopPreview() {
+  const r = await api('/auth/stop-view-as', { method: 'POST' });
+  if (r.relogin) toast('Your staff session expired. Please sign in again.', true);
+  location.hash = r.relogin ? '#staff' : '#/tenants';
+  boot();
 }
 
 async function logout() {

@@ -1,71 +1,115 @@
-// Resident portal: profile, unit info and posted utility charges with breakdown.
-import { api, esc, money, date, fullName, toast, formModal, table, onActions } from './ui.js';
+// Resident portal: latest amount due, statements with PDFs and "how was this calculated",
+// account and unit details. Also used for the read-only staff preview ("Log in as a resident").
+import { api, esc, money, date, fullName, toast, formModal, onActions, ICONS, initials } from './ui.js';
 
 const BASIS = { sqft: 'square footage', bedrooms: 'bedrooms', occupants: 'number of occupants', equal: 'equal share per unit' };
+const pdfUrl = (st) => `/api/resident/statements/${st.id}/pdf`;
 
-export async function startResident(app, user, logout) {
+function howCalculated(st) {
+  return st.charges.map((c) => `<div class="how-item"><b>${esc(c.utility_name)}</b>: the property's bill was ${money(c.bill_total_cents)}.
+    ${c.detail ? `${c.detail.recovery_pct}% of it is shared by residents.` : ''} You were billed for ${c.days} of ${c.period_days} days.
+    ${(c.detail?.bases || []).map((d) => `${d.weight_pct}% is split by ${BASIS[d.basis]}: your factor ${d.factor} × ${d.days} days = ${d.ratio_pct}% of that part → ${money(d.share_cents)}.`).join(' ')}
+    ${c.tax_cents ? `Tax: ${money(c.tax_cents)}.` : ''}</div>`).join('');
+}
+
+function statementCard(st) {
+  return `<article class="stmt">
+    <div class="stmt-head">
+      <div><div class="stmt-title">${date(st.period_start)} – ${date(st.period_end)}</div>
+        <div class="muted small">Statement ${date(st.statement_date)} · Due ${date(st.due_date)}</div></div>
+      <div class="stmt-total">${money(st.total_cents)}</div>
+    </div>
+    <ul class="stmt-lines">${st.lines.map((l) => `<li><span>${esc(l.label)}</span><span>${money(l.amount_cents)}</span></li>`).join('')}</ul>
+    <div class="stmt-foot">
+      <details><summary>How was this calculated?</summary><div class="small how">${howCalculated(st)}</div></details>
+      <a class="btn" href="${pdfUrl(st)}" target="_blank" rel="noopener">${ICONS.download}<span>PDF</span></a>
+    </div>
+  </article>`;
+}
+
+export async function startResident(app, user, logout, stopPreview) {
   let data;
   try { data = await api('/resident/me'); } catch (e) { if (e.status === 401) return logout(); throw e; }
   const { me, statements } = data;
+  const preview = user.preview;
   const year = new Date().getFullYear();
   const ytd = statements.filter((st) => (st.statement_date || st.period_end).startsWith(String(year))).reduce((t, st) => t + st.total_cents, 0);
   const latest = statements[0];
-  const wrap = document.createElement('div');
-  app.replaceChildren(wrap);
-  wrap.innerHTML = `<div class="main centered">
-    <div class="topbar"><div><h1>Hi, ${esc(me.first_name || fullName(me))}</h1>
-      <div class="muted">${esc(me.property_name)} · Unit ${esc(me.unit_number)}</div></div>
-      <div class="row"><button data-action="profile">Update phone</button><button data-action="password">Change password</button>
-      <button data-action="logout">Sign out</button></div></div>
-    <div class="grid cards mb">
-      <div class="card stat"><div class="label">Latest statement</div><div class="value">${money(latest ? latest.total_cents : 0)}</div>
-        <div class="muted small">${latest ? `Due ${date(latest.due_date)}` : 'No statements yet'}</div>
-        ${latest ? `<a href="/api/resident/statements/${latest.id}/pdf" target="_blank" rel="noopener">Download PDF</a>` : ''}</div>
-      <div class="card stat"><div class="label">Utility charges in ${year}</div><div class="value">${money(ytd)}</div></div>
-    </div>
-    <div class="grid two mb">
-      <div class="card"><h2>My account</h2><dl class="kv">
-        <dt>Name</dt><dd>${esc(fullName(me))}</dd>
-        <dt>Account #</dt><dd>${esc(me.account_number || '—')}</dd>
-        <dt>Email</dt><dd>${esc(me.email || '—')}</dd>
-        <dt>Phone</dt><dd>${esc(me.phone || '—')}</dd>
-        <dt>Address</dt><dd>${esc(me.mailing_address || [me.address, 'Unit ' + me.unit_number, me.city, me.state, me.zip].filter(Boolean).join(', '))}</dd></dl></div>
-      <div class="card"><h2>My unit</h2><dl class="kv">
-        <dt>Unit</dt><dd>${esc(me.unit_number)}</dd>
-        <dt>Square feet</dt><dd>${Number(me.sqft).toLocaleString()}</dd>
-        <dt>Bedrooms</dt><dd>${esc(me.bedrooms)}</dd>
-        <dt>Occupants on file</dt><dd>${esc(me.occupants)}</dd>
-        <dt>Move-in</dt><dd>${date(me.move_in)}</dd>
-        ${me.move_out ? `<dt>Move-out</dt><dd>${date(me.move_out)}</dd>` : ''}</dl>
-        <p class="muted small">If any of this is wrong, contact the office. These values are used to calculate your share.</p></div>
-    </div>
-    <h2>Utility statements</h2>
-    ${table({
-      columns: [
-        { label: 'Statement date', value: (st) => date(st.statement_date) },
-        { label: 'Service period', value: (st) => `${date(st.period_start)} – ${date(st.period_end)}` },
-        { label: 'Charges', value: (st) => st.lines.map((l) => `${esc(l.label)} ${money(l.amount_cents)}`).join('<br>') },
-        { label: 'Total', value: (st) => `<b>${money(st.total_cents)}</b>`, cls: 'num' },
-        { label: 'Due', value: (st) => date(st.due_date) },
-        { label: '', value: (st) => `<a href="/api/resident/statements/${st.id}/pdf" target="_blank" rel="noopener">PDF</a>
-          <details><summary>How was this calculated?</summary><div class="small">
-          ${st.charges.map((c) => `<div><b>${esc(c.utility_name)}</b>: the property's bill was ${money(c.bill_total_cents)}.
-            ${c.detail ? `${c.detail.recovery_pct}% is shared by residents.` : ''} You were billed for ${c.days} of ${c.period_days} days.
-            ${(c.detail?.bases || []).map((d) => `${d.weight_pct}% is split by ${BASIS[d.basis]}: your factor ${d.factor} × ${d.days} days = ${d.ratio_pct}% of that part → ${money(d.share_cents)}.`).join(' ')}
-            ${c.tax_cents ? `Tax: ${money(c.tax_cents)}.` : ''}</div>`).join('')}
-          </div></details>` },
-      ],
-      rows: statements,
-      empty: 'No utility statements have been posted to your account yet.',
-    })}
-    <p class="muted small">Charges are posted to your Rent Manager ledger. Pay through your usual rent payment method.</p>
-  </div>`;
+  const address = me.mailing_address || [[me.address, `Apt #${me.unit_number}`].filter(Boolean).join(' '), me.city, [me.state, me.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+  const office = [me.office_phone, me.office_email].filter(Boolean);
 
+  const wrap = document.createElement('div');
+  wrap.className = 'portal';
+  app.replaceChildren(wrap);
+  wrap.innerHTML = `
+    ${preview ? `<div class="preview-bar">${ICONS.eye}<span><b>Staff preview:</b> you're viewing the portal as ${esc(fullName(me))}.
+      Changes are turned off.</span><button data-action="exitPreview">Back to staff view</button></div>` : ''}
+    <header class="portal-head">
+      <div class="portal-head-inner">
+        <div class="portal-brand"><span class="logo-mark">${ICONS.drop}</span>
+          <div><div class="portal-prop">${esc(me.property_name)}</div><div class="portal-sub">Resident portal · Unit ${esc(me.unit_number)}</div></div></div>
+        <div class="portal-user">
+          <span class="avatar">${esc(initials(fullName(me)))}</span>
+          <div class="portal-user-name">${esc(fullName(me))}<div class="portal-sub">Account #${esc(me.account_number || '—')}</div></div>
+          ${preview ? '' : `<button class="ghost" data-action="logout">${ICONS.logout}<span>Sign out</span></button>`}
+        </div>
+      </div>
+    </header>
+    <main class="portal-main">
+      <h1 class="portal-hello">Hi, ${esc(me.first_name || fullName(me))}</h1>
+      <section class="due ${latest ? '' : 'none'}">
+        ${latest ? `<div>
+            <div class="due-label">Amount due</div>
+            <div class="due-amount">${money(latest.total_cents)}</div>
+            <div class="due-meta">Due ${date(latest.due_date)} · Service ${date(latest.period_start)} – ${date(latest.period_end)}</div>
+          </div>
+          <div class="due-actions">
+            <a class="btn light" href="${pdfUrl(latest)}" target="_blank" rel="noopener">${ICONS.download}<span>Download statement</span></a>
+            <div class="due-note">Posted to your resident ledger. Pay with your rent.</div>
+          </div>`
+        : '<div><div class="due-label">Amount due</div><div class="due-amount">$0.00</div><div class="due-meta">No utility statements have been posted to your account yet.</div></div>'}
+      </section>
+
+      <div class="portal-grid">
+        <section>
+          <div class="section-head"><h2>Statements</h2>
+            <span class="muted small">${statements.length} statement${statements.length === 1 ? '' : 's'} · ${money(ytd)} in ${year}</span></div>
+          ${statements.length ? statements.map(statementCard).join('') : '<div class="card empty">Your statements will appear here once the office posts them.</div>'}
+        </section>
+        <aside>
+          <div class="card side-card"><h3>${ICONS.user}<span>My account</span></h3><dl class="kv">
+            <dt>Name</dt><dd>${esc(fullName(me))}</dd>
+            <dt>Account #</dt><dd>${esc(me.account_number || '—')}</dd>
+            <dt>Email</dt><dd>${esc(me.email || '—')}</dd>
+            <dt>Phone</dt><dd>${esc(me.phone || '—')}</dd>
+            <dt>Address</dt><dd>${esc(address)}</dd></dl>
+            <div class="side-actions">
+              <button data-action="profile" ${preview ? 'disabled title="Turned off in the staff preview"' : ''}>${ICONS.phone}<span>Update phone</span></button>
+              <button data-action="password" ${preview ? 'disabled title="Turned off in the staff preview"' : ''}>${ICONS.lock}<span>Change password</span></button>
+            </div></div>
+          <div class="card side-card"><h3>${ICONS.building}<span>My unit</span></h3><dl class="kv">
+            <dt>Unit</dt><dd>${esc(me.unit_number)}</dd>
+            <dt>Square feet</dt><dd>${Number(me.sqft).toLocaleString()}</dd>
+            <dt>Bedrooms</dt><dd>${esc(me.bedrooms)}</dd>
+            <dt>Occupants</dt><dd>${esc(me.occupants)}</dd>
+            <dt>Move-in</dt><dd>${date(me.move_in)}</dd>
+            ${me.move_out ? `<dt>Move-out</dt><dd>${date(me.move_out)}</dd>` : ''}</dl>
+            <p class="muted small m0">These details are used to calculate your share. If something is wrong, contact the office.</p></div>
+          <div class="card side-card help-card"><h3>Questions?</h3>
+            <p class="small m0">${office.length ? `Contact the office: ${office.map(esc).join(' · ')}.` : 'Contact your leasing office.'}
+              Please let them know if the number of people in your apartment changes.</p></div>
+        </aside>
+      </div>
+    </main>
+    <footer class="portal-foot">${esc(me.property_name)}${user.company_name ? ` · Managed by ${esc(user.company_name)}` : ''}</footer>`;
+
+  const again = () => startResident(app, user, logout, stopPreview);
   onActions(wrap, {
     logout: () => logout(),
+    exitPreview: () => stopPreview(),
     profile: () => formModal({ title: 'Update phone number', intro: '<p class="muted small">To change your email address, contact the office.</p>', fields: [
       { name: 'phone', label: 'Phone', type: 'tel', full: true }], values: me,
-      onSubmit: async (d) => { await api('/resident/profile', { method: 'PUT', body: d }); toast('Saved'); startResident(app, user, logout); } }),
+      onSubmit: async (d) => { await api('/resident/profile', { method: 'PUT', body: d }); toast('Saved'); again(); } }),
     password: () => formModal({ title: 'Change password', fields: [
       { name: 'current_password', label: 'Current password', type: 'password', required: true, full: true, autocomplete: 'current-password' },
       { name: 'new_password', label: 'New password (8+ characters)', type: 'password', required: true, full: true, autocomplete: 'new-password' }],

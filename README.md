@@ -117,6 +117,14 @@ In Cloudflare go to **Security → WAF → Rate limiting rules** (the free plan 
 
 Each statement line is one row: each utility uses its RM charge code, tax uses the property's tax code, and the fee uses the fee code. To rename or reorder the columns, edit `RM_CHARGE_COLUMNS` in `functions/api/[[path]].js`.
 
+### Log in as a resident (staff preview)
+
+Any staff member can see the portal exactly as a resident does. Click **Log in as a resident** in the sidebar and search for the resident, or click **View as resident** on a tenant row.
+- An orange banner shows whose portal you're viewing. Click **Back to staff view** to return.
+- The preview is read-only: residents' passwords and phone numbers can't be changed from it.
+- It ends after 2 hours.
+- It works even if the resident hasn't activated their portal.
+
 ### Resident portal
 
 Residents open the same URL and click **First time? Activate**. They enter their **account number** and the **email on file**, then choose a password. Residents only see finalized statements and can download them as PDFs. Staff can reset a resident's login from the Tenants page.

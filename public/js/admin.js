@@ -1,6 +1,7 @@
 // Admin app: dashboard, properties, units, tenants, utilities, billing, exports, settings.
 import {
   api, esc, money, date, fullName, toast, modal, closeModal, confirmBox, formModal, table, parseCSV, onActions, bindSelection,
+  ICONS, initials,
 } from './ui.js';
 import { runsTable, runsView, runForm, runDetailPage, emailSettingsView } from './billing.js';
 import { DEFAULT_TEXT } from './shared/statement-pdf.js';
@@ -8,25 +9,66 @@ import { DEFAULT_TEXT } from './shared/statement-pdf.js';
 let root, currentUser, doLogout;
 
 const NAV = [
-  ['dashboard', 'Dashboard'], ['properties', 'Properties'], ['tenants', 'Tenants'],
-  ['billing', 'Billing'], ['exports', 'Export to Rent Manager'], ['settings', 'Settings'],
+  ['dashboard', 'Dashboard', 'home'], ['properties', 'Properties', 'building'], ['tenants', 'Tenants', 'users'],
+  ['billing', 'Billing', 'doc'], ['exports', 'Export to Rent Manager', 'export'], ['settings', 'Settings', 'gear'],
 ];
 
 export function startAdmin(app, user, logout) {
   currentUser = user;
   doLogout = logout;
   app.innerHTML = `<div class="shell">
-    <nav class="sidebar"><div class="brand">Utility Billing</div>
-      ${NAV.map(([k, l]) => `<a href="#/${k}" data-nav="${k}">${l}</a>`).join('')}
+    <nav class="sidebar">
+      <div class="side-brand"><span class="logo-mark">${ICONS.drop}</span>
+        <div><div class="side-title">Utility Billing</div>${user.company_name ? `<div class="side-sub">${esc(user.company_name)}</div>` : ''}</div></div>
+      <div class="side-nav">${NAV.map(([k, l, icon]) => `<a href="#/${k}" data-nav="${k}">${ICONS[icon]}<span>${l}</span></a>`).join('')}</div>
+      <div class="side-section">Preview</div>
+      <a href="#" id="viewAs" class="side-link">${ICONS.eye}<span>Log in as a resident</span></a>
       <div class="spacer"></div>
-      <div class="small muted who">${esc(user.name || user.email)}</div>
-      <a href="#" id="logout">Sign out</a>
+      <div class="side-user"><span class="avatar">${esc(initials(user.name || user.email))}</span>
+        <div class="side-user-text"><div class="side-user-name">${esc(user.name || 'Staff')}</div><div class="side-user-email">${esc(user.email)}</div></div></div>
+      <a href="#" id="logout" class="side-link">${ICONS.logout}<span>Sign out</span></a>
     </nav>
     <main class="main" id="view"></main></div>`;
   root = app.querySelector('#view');
   app.querySelector('#logout').addEventListener('click', (e) => { e.preventDefault(); doLogout(); });
+  app.querySelector('#viewAs').addEventListener('click', (e) => { e.preventDefault(); viewAsPicker(); });
   window.onhashchange = route;
   route();
+}
+
+// ---- "Log in as a resident": opens a read-only resident session (staff preview)
+async function viewAsResident(tenantId) {
+  await api(`/admin/tenants/${tenantId}/view-as`, { method: 'POST' });
+  location.hash = '';
+  location.reload();
+}
+
+async function viewAsPicker() {
+  const tenants = await api('/admin/tenants?property_active=1');
+  const m = modal(`<h2>Log in as a resident</h2>
+    <p class="small muted">See the resident portal exactly as this resident sees it. It's read-only (no password or phone changes) and you can go back
+      to the staff view at any time. Works even if the resident hasn't activated their portal.</p>
+    <input type="search" placeholder="Search name, unit, account or email…" data-q class="mb">
+    <div class="picker" data-list></div>
+    <div class="footer"><button data-close>Cancel</button></div>`, { wide: true });
+  const list = m.querySelector('[data-list]');
+  const draw = (q = '') => {
+    const k = q.trim().toLowerCase();
+    const rows = tenants.filter((t) => !k || [fullName(t), t.unit_number, t.account_number, t.email, t.property_name].some((v) => String(v || '').toLowerCase().includes(k)))
+      .sort((a, b) => (a.status === 'current' ? 0 : 1) - (b.status === 'current' ? 0 : 1)).slice(0, 50);
+    list.innerHTML = rows.length ? rows.map((t) => `<button type="button" class="picker-row" data-id="${t.id}">
+        <span class="avatar sm">${esc(initials(fullName(t)))}</span>
+        <span class="grow"><b>${esc(fullName(t))}</b><span class="muted small"> · ${esc(t.property_name)} · Unit ${esc(t.unit_number)}${t.account_number ? ` · #${esc(t.account_number)}` : ''}</span></span>
+        <span class="badge ${esc(t.status)}">${esc(t.status)}</span></button>`).join('')
+      : '<div class="empty">No residents match.</div>';
+  };
+  draw();
+  m.querySelector('[data-q]').addEventListener('input', (e) => draw(e.target.value));
+  m.querySelector('[data-q]').focus();
+  list.addEventListener('click', (e) => {
+    const row = e.target.closest('[data-id]');
+    if (row) viewAsResident(row.dataset.id).catch((err) => toast(err.message, true));
+  });
 }
 
 function mount(html) {
@@ -406,7 +448,8 @@ async function tenantsView(el, { propertyId, filters = {} }) {
         { label: 'Status', value: (t) => statusBadge(t.status) + (t.portal_active ? ' <span class="badge" title="Resident portal activated">portal</span>' : '') },
       ],
       rows: tenants,
-      actions: (t) => `<button class="link" data-action="edit" data-id="${t.id}">Edit</button>
+      actions: (t) => `<button class="link" data-action="viewAs" data-id="${t.id}" title="See the resident portal as this resident">View as resident</button>
+        <button class="link" data-action="edit" data-id="${t.id}">Edit</button>
         ${!t.move_out ? `<button class="link" data-action="moveout" data-id="${t.id}">Move out</button>` : ''}
         ${t.portal_active ? `<button class="link" data-action="resetPortal" data-id="${t.id}">Reset login</button>` : ''}
         <button class="link danger" data-action="del" data-id="${t.id}">Delete</button>`,
@@ -427,6 +470,7 @@ async function tenantsView(el, { propertyId, filters = {} }) {
   })));
   div.querySelector('[data-selbar]').addEventListener('click', (e) => { if (e.target.matches('[data-bulk-clear]')) sel.clear(); });
   onActions(div, {
+    viewAs: ({ id }) => viewAsResident(id),
     history: () => importHistoryModal('tenants', () => reload()),
     add: () => tenantForm({ title: 'Add tenant', propertyId,
       onSave: async (d) => { await api('/admin/tenants', { method: 'POST', body: d }); toast('Tenant added'); reload(); } }),

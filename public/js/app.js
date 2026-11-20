@@ -5,12 +5,34 @@ import { startResident } from './resident.js';
 
 const app = document.getElementById('app');
 let company = '';
+let altchaOn = false; // ALTCHA "I'm not a robot" check on sign-in forms (Settings → Security)
+let minPw = 8;
+
+// ALTCHA widget (self-hosted in /vendor/altcha): loaded only on the sign-in screens.
+let altchaLoaded;
+function loadAltcha() {
+  altchaLoaded ??= (async () => {
+    const css = document.createElement('link');
+    css.rel = 'stylesheet';
+    css.href = '/vendor/altcha/altcha.css';
+    document.head.append(css);
+    await import('/vendor/altcha/altcha.min.js');
+    const worker = () => new Worker('/vendor/altcha/pbkdf2.js');
+    globalThis.$altcha.algorithms.set('PBKDF2/SHA-256', worker);
+  })();
+  return altchaLoaded;
+}
+const altchaWidget = () => (altchaOn
+  ? '<div class="altcha-wrap"><altcha-widget challenge="/api/auth/challenge" auto="onload" name="altcha"></altcha-widget></div>'
+  : '');
 
 async function boot() {
   let status;
   try { status = await api('/auth/status'); }
   catch (e) { app.innerHTML = `<div class="center"><div class="error">Could not reach the server: ${esc(e.message)}</div></div>`; return; }
   company = status.company_name || '';
+  altchaOn = Boolean(status.altcha);
+  minPw = status.min_password_length || 8;
   if (status.needsSetup) return setupScreen();
   if (!status.user) return loginScreen(location.hash === '#staff' ? 'staff' : 'resident');
   const user = { ...status.user, company_name: company, payment_url: status.payment_url || '' };
@@ -90,6 +112,7 @@ function render(brand, body) {
     b.textContent = show ? 'Hide' : 'Show';
     b.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
   }));
+  if (altchaOn) loadAltcha().catch(() => {});
   box.querySelector('input')?.focus();
   return box;
 }
@@ -100,15 +123,30 @@ function bindForm(box, handler, check) {
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     err.hidden = true;
-    const data = Object.fromEntries(new FormData(form));
+    let data = Object.fromEntries(new FormData(form));
     const problem = check?.(data);
     if (problem) { err.textContent = problem; err.hidden = false; return; }
     const btn = form.querySelector('button[type=submit]');
     const label = btn.textContent;
     btn.disabled = true;
     btn.textContent = 'Please wait…';
-    try { await handler(data); }
-    catch (ex) { err.textContent = ex.message; err.hidden = false; btn.disabled = false; btn.textContent = label; }
+    const widget = form.querySelector('altcha-widget');
+    try {
+      if (widget && !data.altcha) {
+        // The check normally finishes while the user types; if not, run it now.
+        btn.textContent = 'Checking you\'re not a robot…';
+        await loadAltcha();
+        await widget.verify();
+        data = Object.fromEntries(new FormData(form));
+        if (!data.altcha) throw new Error('Please tick "I\'m not a robot" and try again.');
+        btn.textContent = 'Please wait…';
+      }
+      await handler(data);
+    } catch (ex) {
+      err.textContent = ex.message; err.hidden = false; btn.disabled = false; btn.textContent = label;
+      // A solved check can only be used once: get a fresh one for the next try.
+      if (widget && typeof widget.reset === 'function') widget.reset();
+    }
   });
 }
 
@@ -130,6 +168,7 @@ function loginScreen(mode = 'resident') {
     <form novalidate>
       <div class="field"><label for="f_email">Email</label><input id="f_email" name="email" type="email" required autocomplete="email" placeholder="you@example.com"></div>
       ${passwordField({ autocomplete: 'current-password' })}
+      ${altchaWidget()}
       <button class="primary block" type="submit">Sign in</button>
     </form>
     ${staff
@@ -141,7 +180,7 @@ function loginScreen(mode = 'resident') {
     loginScreen(b.dataset.mode);
   }));
   bindForm(box, async (d) => {
-    await api('/auth/login', { method: 'POST', body: { email: d.email, password: d.password, type: staff ? 'admin' : 'resident' } });
+    await api('/auth/login', { method: 'POST', body: { email: d.email, password: d.password, type: staff ? 'admin' : 'resident', altcha: d.altcha } });
     boot();
   }, (d) => (!d.email || !d.password ? 'Enter your email and password.' : null));
 }
@@ -159,19 +198,20 @@ function activateScreen() {
     <form novalidate>
       <div class="field"><label for="f_account_number">Account number</label><input id="f_account_number" name="account_number" required autocomplete="off" placeholder="e.g. 33580"></div>
       <div class="field"><label for="f_email">Email on file</label><input id="f_email" name="email" type="email" required autocomplete="email" placeholder="you@example.com"></div>
-      ${passwordField({ label: 'Choose a password', autocomplete: 'new-password', minlength: 8, help: 'At least 8 characters.' })}
-      ${passwordField({ name: 'password2', label: 'Confirm password', autocomplete: 'new-password', minlength: 8 })}
+      ${passwordField({ label: 'Choose a password', autocomplete: 'new-password', minlength: minPw, help: `At least ${minPw} characters.` })}
+      ${passwordField({ name: 'password2', label: 'Confirm password', autocomplete: 'new-password', minlength: minPw })}
+      ${altchaWidget()}
       <button class="primary block" type="submit">Activate my account</button>
     </form>
     <p class="login-note">Account number or email not recognized? Contact your leasing office to check the details they have on file.</p>`);
   box.querySelector('[data-back]').addEventListener('click', () => loginScreen('resident'));
   bindForm(box, async (d) => {
-    await api('/auth/activate', { method: 'POST', body: { account_number: d.account_number, email: d.email, password: d.password } });
+    await api('/auth/activate', { method: 'POST', body: { account_number: d.account_number, email: d.email, password: d.password, altcha: d.altcha } });
     toast('Your account is active. Welcome!');
     boot();
   }, (d) => {
     if (!d.account_number || !d.email) return 'Enter your account number and email.';
-    if ((d.password || '').length < 8) return 'Your password must be at least 8 characters.';
+    if ((d.password || '').length < minPw) return `Your password must be at least ${minPw} characters.`;
     return passwordsMatch(d);
   });
 }
@@ -188,16 +228,17 @@ function setupScreen() {
     <form novalidate>
       <div class="field"><label for="f_name">Your name</label><input id="f_name" name="name" autocomplete="name"></div>
       <div class="field"><label for="f_email">Email</label><input id="f_email" name="email" type="email" required autocomplete="email"></div>
-      ${passwordField({ autocomplete: 'new-password', minlength: 8, help: 'At least 8 characters.' })}
-      ${passwordField({ name: 'password2', label: 'Confirm password', autocomplete: 'new-password', minlength: 8 })}
+      ${passwordField({ autocomplete: 'new-password', minlength: minPw, help: `At least ${minPw} characters.` })}
+      ${passwordField({ name: 'password2', label: 'Confirm password', autocomplete: 'new-password', minlength: minPw })}
+      ${altchaWidget()}
       <button class="primary block" type="submit">Create admin account</button>
     </form>`);
   bindForm(box, async (d) => {
-    await api('/auth/setup', { method: 'POST', body: { name: d.name, email: d.email, password: d.password } });
+    await api('/auth/setup', { method: 'POST', body: { name: d.name, email: d.email, password: d.password, altcha: d.altcha } });
     boot();
   }, (d) => {
     if (!d.email) return 'Enter your email.';
-    if ((d.password || '').length < 8) return 'Your password must be at least 8 characters.';
+    if ((d.password || '').length < minPw) return `Your password must be at least ${minPw} characters.`;
     return passwordsMatch(d);
   });
 }

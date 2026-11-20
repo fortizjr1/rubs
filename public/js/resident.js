@@ -126,7 +126,7 @@ export async function startResident(app, user, logout, stopPreview) {
       onSubmit: async (d) => { await api('/resident/profile', { method: 'PUT', body: d }); toast('Saved'); again(); } }),
     password: () => formModal({ title: 'Change password', fields: [
       { name: 'current_password', label: 'Current password', type: 'password', required: true, full: true, autocomplete: 'current-password' },
-      { name: 'new_password', label: 'New password (8+ characters)', type: 'password', required: true, full: true, autocomplete: 'new-password' }],
+      { name: 'new_password', label: 'New password', type: 'password', required: true, full: true, autocomplete: 'new-password' }],
       onSubmit: async (d) => { await api('/resident/password', { method: 'PUT', body: d }); toast('Password changed'); } }),
   });
 }

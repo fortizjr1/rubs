@@ -194,6 +194,22 @@ migrations/        Database schema (D1)
 tests/             Calculation tests
 ```
 
+## Security
+
+**Settings → Security** lists what protects the app and lets you change:
+
+- **"I'm not a robot" check (ALTCHA)** on staff sign-in, resident sign-in, activation and first-time setup.
+  Self-hosted proof-of-work (widget files in `public/vendor/altcha`, MIT licence), no account or keys to set up:
+  the signing keys are generated automatically and kept in the database.
+- **Failed sign-in lockout** (default 5 wrong passwords → 15 minutes, per email/account; one IP is limited to 4× that).
+- **Session length** for staff (hours) and residents (days), and the **minimum password length**.
+- Sign out all staff / all residents / everyone, unlock locked-out emails, and a **sign-in activity** log
+  (time, result, email, IP address, device), kept for 90 days.
+
+Always on: HTTPS only (HSTS), PBKDF2 password hashes, HttpOnly/Secure/SameSite=Strict cookies, a strict
+Content-Security-Policy (no outside scripts, no framing), JSON-only API (blocks cross-site form posts), and changing a
+password signs out that person's other devices.
+
 ## Database backups
 
 In the app: **Settings → System & storage** shows the database size against the free-plan limit,

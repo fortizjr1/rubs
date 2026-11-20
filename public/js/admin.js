@@ -1052,13 +1052,14 @@ async function exportsPage() {
 // --------------------------------------------------------------- settings
 
 async function settingsPage(tab) {
-  const tabs = [['email', 'Company & email'], ['staff', 'Staff accounts'], ['system', 'System & storage']];
+  const tabs = [['email', 'Company & email'], ['staff', 'Staff accounts'], ['security', 'Security'], ['system', 'System & storage']];
   const div0 = mount(`<div class="topbar"><h1>Settings</h1></div>
     <div class="tabs">${tabs.map(([k, l]) => `<a href="#/settings/${k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}</div>
     <div data-tab></div>`);
   const el = div0.querySelector('[data-tab]');
   if (tab === 'email') return emailSettingsView(el);
   if (tab === 'system') return systemView(el);
+  if (tab === 'security') return securityView(el);
   const admins = await api('/admin/admins');
   const div = document.createElement('div');
   el.replaceChildren(div);
@@ -1066,18 +1067,19 @@ async function settingsPage(tab) {
     <div class="topbar"><h2 class="m0">Staff accounts</h2><div class="row">
       <button data-action="password">Change my password</button><button class="primary" data-action="add">+ Add staff user</button></div></div>
     ${table({
-      columns: [{ label: 'Name', value: 'name' }, { label: 'Email', value: 'email' }, { label: 'Created', value: (a) => date(a.created_at) }],
+      columns: [{ label: 'Name', value: 'name' }, { label: 'Email', value: 'email' }, { label: 'Created', value: (a) => date(a.created_at) },
+        { label: 'Last sign-in', value: (a) => (a.last_login_at ? `${esc(dateTime(a.last_login_at))}<div class="small muted">IP ${esc(a.last_login_ip || 'unknown')}</div>` : '<span class="muted">—</span>') }],
       rows: admins,
       actions: (a) => (a.id === currentUser.id ? '<span class="muted small">you</span>' : `<button class="link danger" data-action="del" data-id="${a.id}">Remove</button>`),
     })}`;
   onActions(div, {
     add: () => formModal({ title: 'Add staff user', fields: [
       { name: 'name', label: 'Name' }, { name: 'email', label: 'Email', type: 'email', required: true },
-      { name: 'password', label: 'Temporary password (8+ characters)', type: 'password', required: true, full: true, autocomplete: 'new-password' }],
+      { name: 'password', label: 'Temporary password', type: 'password', required: true, full: true, autocomplete: 'new-password' }],
       onSubmit: async (d) => { await api('/admin/admins', { method: 'POST', body: d }); toast('Staff user added'); settingsPage('staff'); } }),
     password: () => formModal({ title: 'Change my password', fields: [
       { name: 'current_password', label: 'Current password', type: 'password', required: true, full: true, autocomplete: 'current-password' },
-      { name: 'new_password', label: 'New password (8+ characters)', type: 'password', required: true, full: true, autocomplete: 'new-password' }],
+      { name: 'new_password', label: 'New password', type: 'password', required: true, full: true, autocomplete: 'new-password' }],
       onSubmit: async (d) => { await api('/admin/admins/me/password', { method: 'PUT', body: d }); toast('Password changed'); } }),
     del: async ({ id }) => {
       if (!(await confirmBox('Remove this staff user?', 'Remove'))) return;
@@ -1225,4 +1227,118 @@ function backupSql(data, info) {
     }
   }
   return out.join('\n') + '\n';
+}
+
+// --------------------------------------------------------------- settings → security
+
+const KIND_LABEL = { staff: 'Staff sign-in', resident: 'Resident sign-in', activate: 'Resident activation', setup: 'First-time setup' };
+// A short "Chrome on Windows" style label from the browser's user agent.
+function deviceLabel(ua) {
+  if (!ua) return '—';
+  const browser = /Edg\//.test(ua) ? 'Edge' : /OPR\//.test(ua) ? 'Opera' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : /curl|python|wget|Go-http|node|axios|bot|spider/i.test(ua) ? 'Script/bot' : 'Other';
+  const os = /iPhone|iPad/.test(ua) ? 'iPhone/iPad' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac OS X/.test(ua) ? 'Mac' : /Linux/.test(ua) ? 'Linux' : '';
+  return os ? `${browser} on ${os}` : browser;
+}
+
+let activityFailedOnly = false;
+
+async function securityView(el) {
+  const [sec, act, ses] = await Promise.all([
+    api('/admin/security'), api(`/admin/security/activity${activityFailedOnly ? '?failed=1' : ''}`), api('/admin/security/sessions'),
+  ]);
+  const check = (ok, text) => `<li class="${ok ? 'ok' : 'off'}"><span class="chk" aria-hidden="true">${ok ? '✓' : '!'}</span><span>${text}</span></li>`;
+  const div = document.createElement('div');
+  div.innerHTML = `
+    <div class="grid sys-grid">
+      <section class="card">
+        <h2>What's protecting the app</h2>
+        <ul class="checklist small">
+          ${check(true, '<b>HTTPS only.</b> Cloudflare encrypts every connection, and the browser is told never to use plain HTTP.')}
+          ${check(true, '<b>Passwords are never stored.</b> Only a salted PBKDF2-SHA256 hash is kept, for staff and residents.')}
+          ${check(true, '<b>Secure sign-in cookies</b> (HttpOnly, Secure, SameSite=Strict), so other websites can\'t use your session.')}
+          ${check(true, '<b>Strict browser security headers</b>: no outside scripts, no framing of the app (stops click-jacking), no camera/mic/location access.')}
+          ${check(sec.altcha_enabled, sec.altcha_enabled ? '<b>Bot check (ALTCHA)</b> on sign-in, activation and setup forms. Self-hosted: no outside service and no tracking.' : '<b>Bot check (ALTCHA) is off.</b> Turn it on below to slow down automated password guessing.')}
+          ${check(true, `<b>Failed sign-in lockout</b>: ${sec.max_failed_logins} wrong tries locks that email for ${sec.lockout_minutes} minutes. One internet address is also limited to ${sec.max_failed_logins * 4} failures across all emails.`)}
+          ${check(true, '<b>Same answer for unknown emails</b>: the sign-in page doesn\'t reveal which emails have accounts.')}
+          ${check(true, '<b>Changing a password signs out your other devices</b>, and locking a resident signs them out right away.')}
+        </ul>
+      </section>
+      <section class="card">
+        <h2>Settings</h2>
+        <form data-sec class="sec-form">
+          <label class="check"><input type="checkbox" name="altcha_enabled" ${sec.altcha_enabled ? 'checked' : ''}>
+            <span><b>"I'm not a robot" check (ALTCHA)</b> on sign-in, activation and setup<span class="help">The browser solves a small puzzle in about a second. People just tick the box; bots trying thousands of passwords are slowed down.</span></span></label>
+          <div class="form-grid">
+            <div class="field"><label>Wrong passwords before lockout</label><input type="number" name="max_failed_logins" min="3" max="20" value="${sec.max_failed_logins}" required></div>
+            <div class="field"><label>Lockout length (minutes)</label><input type="number" name="lockout_minutes" min="5" max="1440" value="${sec.lockout_minutes}" required></div>
+            <div class="field"><label>Staff stay signed in for (hours)</label><input type="number" name="staff_session_hours" min="1" max="168" value="${sec.staff_session_hours}" required></div>
+            <div class="field"><label>Residents stay signed in for (days)</label><input type="number" name="resident_session_days" min="1" max="90" value="${sec.resident_session_days}" required></div>
+            <div class="field"><label>Minimum password length</label><input type="number" name="min_password_length" min="8" max="64" value="${sec.min_password_length}" required>
+              <div class="help">For new and changed passwords. Existing passwords keep working.</div></div>
+          </div>
+          <div class="error" hidden></div>
+          <button class="primary" type="submit">Save security settings</button>
+        </form>
+      </section>
+      <section class="card">
+        <h2>Signed-in sessions</h2>
+        <p class="small">Right now: <b>${ses.staff}</b> staff session${ses.staff === 1 ? '' : 's'} and <b>${ses.residents}</b> resident session${ses.residents === 1 ? '' : 's'}.
+          If you think a password was stolen, sign everyone out, then change that password.</p>
+        <div class="row">
+          <button data-action="signOut" data-who="staff">Sign out all other staff</button>
+          <button data-action="signOut" data-who="residents">Sign out all residents</button>
+          <button class="danger" data-action="signOut" data-who="all">Sign out everyone but me</button>
+        </div>
+      </section>
+      <section class="card">
+        <h2>Locked out right now</h2>
+        ${act.locked.length ? `<table class="plain small"><tbody>${act.locked.map((l) => `<tr><td>${esc(l.identifier)}<div class="muted">${l.n} failed tries, last ${esc(dateTime(l.last))}</div></td>
+            <td class="right"><button class="link" data-action="unlock" data-id="${esc(l.identifier)}">Unlock</button></td></tr>`).join('')}</tbody></table>
+            <button class="link" data-action="unlock">Unlock everyone</button>`
+          : '<p class="small muted m0">Nobody is locked out.</p>'}
+        <p class="small muted">In the last 24 hours: ${act.last_24h.ok} successful and ${act.last_24h.failed} failed sign-in${act.last_24h.failed === 1 ? '' : 's'}.</p>
+      </section>
+    </div>
+    <div class="topbar mt"><h2 class="m0">Sign-in activity</h2>
+      <div class="tabs m0">${[[false, 'All'], [true, 'Failed only']].map(([v, l]) => `<button data-action="filter" data-failed="${v}" class="${v === activityFailedOnly ? 'active' : ''}">${l}</button>`).join('')}</div></div>
+    ${table({
+      columns: [
+        { label: 'When', value: (r) => esc(dateTime(r.created_at)) },
+        { label: 'Result', value: (r) => (r.success ? '<span class="badge posted">success</span>' : `<span class="badge danger">failed</span>${r.reason ? `<div class="small muted">${esc(r.reason)}</div>` : ''}`) },
+        { label: 'Type', value: (r) => esc(KIND_LABEL[r.kind] || r.kind) },
+        { label: 'Email / account', value: (r) => esc(r.identifier || '—'), cls: 'contact' },
+        { label: 'IP address', value: (r) => esc(r.ip || '—') },
+        { label: 'Device', value: (r) => `<span title="${esc(r.user_agent || '')}">${esc(deviceLabel(r.user_agent))}</span>` },
+      ],
+      rows: act.rows,
+      pageKey: 'signins',
+      empty: 'No sign-ins recorded yet.',
+    })}
+    <p class="small muted">Shows the latest 100 attempts. Entries are kept for 90 days.</p>`;
+  el.replaceChildren(div);
+  const again = () => securityView(el);
+  div.querySelector('[data-sec]').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const err = f.querySelector('.error');
+    err.hidden = true;
+    const d = Object.fromEntries(new FormData(f));
+    d.altcha_enabled = f.altcha_enabled.checked;
+    for (const k of ['max_failed_logins', 'lockout_minutes', 'staff_session_hours', 'resident_session_days', 'min_password_length']) d[k] = Number(d[k]);
+    try { await api('/admin/security', { method: 'PUT', body: d }); toast('Security settings saved'); again(); }
+    catch (ex) { err.textContent = ex.message; err.hidden = false; }
+  });
+  onActions(div, {
+    filter: ({ failed }) => { activityFailedOnly = failed === 'true'; resetPage('signins'); again(); },
+    unlock: async ({ id }) => {
+      const r = await api('/admin/security/clear-lockouts', { method: 'POST', body: { identifier: id || null } });
+      toast(id ? `${id} can sign in again` : `Lockouts cleared (${r.cleared} failed tries forgotten)`); again();
+    },
+    signOut: async ({ who }) => {
+      const what = { staff: 'all other staff members', residents: 'all residents', all: 'everyone except you (staff and residents)' }[who];
+      if (!(await confirmBox(`Sign out ${what}? They'll need to sign in again.`, 'Sign out'))) return;
+      const r = await api('/admin/security/sign-out-all', { method: 'POST', body: { who } });
+      toast(`${r.signed_out} session${r.signed_out === 1 ? '' : 's'} signed out`); again();
+    },
+  });
 }

@@ -3,12 +3,16 @@
 
 import { toCSV, csvResponse, dollars } from '../../lib/csv.js';
 import {
-  hashPassword, verifyPassword, validatePassword, createSession, sessionCookie,
+  hashPassword, verifyPassword, createSession, sessionCookie,
   getSession, readSessionToken,
 } from '../../lib/auth.js';
 import { HttpError, json, body, today, blank, coerce } from '../../lib/util.js';
 import { loadSettings, saveSettings, sendTestEmail } from '../../lib/settings.js';
 import { systemInfo, backupPage } from '../../lib/system.js';
+import {
+  loadSecurity, saveSecurity, validatePassword, clientIp, checkLockout, recordAttempt, signInActivity, clearLockouts,
+  createAltchaChallenge, verifyAltcha,
+} from '../../lib/security.js';
 import {
   listRuns, runDetail, createRun, updateRun, deleteRun, calculateRun, setRunStatus, testUtility,
   statementRenderData, pdfResponse, emailStatement,
@@ -744,11 +748,13 @@ async function adminDashboard(db) {
 
 // ---------------------------------------------------------------- resident portal security
 
+// A real PBKDF2 hash of a random password: checked when an email is unknown, so timing is the same.
+const DUMMY_HASH = 'pbkdf2$20000$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
 const LOCKED_MESSAGE = 'This account is locked. Please contact the office.';
 
 /** Records a resident's sign-in time and IP (Cloudflare passes the visitor's IP in CF-Connecting-IP). */
 async function recordResidentLogin(db, tenantId, request) {
-  const ip = (request.headers.get('CF-Connecting-IP') || request.headers.get('X-Forwarded-For') || '').split(',')[0].trim().slice(0, 64) || null;
+  const ip = clientIp(request);
   await db.prepare("UPDATE tenants SET last_login_at = datetime('now'), last_login_ip = ? WHERE id = ?").bind(ip, tenantId).run();
 }
 
@@ -783,47 +789,83 @@ async function handle({ request, env }) {
       // Company name is shown on the sign-in page (it is printed on every statement anyway).
       const rows = (await db.prepare("SELECT key, value FROM settings WHERE key IN ('company_name', 'payment_url')").all()).results;
       const setting = (k) => rows.find((r) => r.key === k)?.value || '';
-      return json({ needsSetup, user, company_name: setting('company_name'), payment_url: setting('payment_url') });
+      const sec = await loadSecurity(db);
+      return json({ needsSetup, user, company_name: setting('company_name'), payment_url: setting('payment_url'),
+        altcha: sec.altcha_enabled, min_password_length: sec.min_password_length });
+    }
+    if (action === 'challenge' && method === 'GET') {
+      // ALTCHA bot check: a fresh proof-of-work puzzle for the sign-in forms.
+      return json(await createAltchaChallenge(db));
     }
     if (action === 'setup' && method === 'POST') {
       const b = await body(request);
       if (await db.prepare('SELECT 1 FROM admins LIMIT 1').first()) throw new HttpError(409, 'Setup has already been completed');
+      const sec = await loadSecurity(db);
+      if (sec.altcha_enabled) await verifyAltcha(db, b.altcha);
       const email = coerce('email', b.email, 'Email');
       if (!email) throw new HttpError(400, 'Email is required');
-      validatePassword(b.password);
+      validatePassword(b.password, sec.min_password_length);
       const r = await db.prepare('INSERT INTO admins (email, name, password_hash) VALUES (?, ?, ?) RETURNING id')
         .bind(email, b.name || null, await hashPassword(b.password)).first();
-      const token = await createSession(db, 'admin', r.id);
-      return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(token) });
+      await recordAttempt(db, request, { kind: 'setup', identifier: email.toLowerCase(), success: true });
+      const token = await createSession(db, 'admin', r.id, { hours: sec.staff_session_hours });
+      return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(token, sec.staff_session_hours * 3600) });
     }
     if (action === 'login' && method === 'POST') {
       const b = await body(request);
-      const email = String(b.email || '').trim();
+      const email = String(b.email || '').trim().slice(0, 254);
       const isAdmin = b.type === 'admin';
-      const row = isAdmin
-        ? await db.prepare('SELECT id, password_hash FROM admins WHERE email = ?').bind(email).first()
-        : await db.prepare('SELECT id, password_hash, locked_at FROM tenants WHERE email = ? AND password_hash IS NOT NULL ORDER BY move_in DESC LIMIT 1').bind(email).first();
-      if (!row || !(await verifyPassword(String(b.password || ''), row.password_hash))) {
-        throw new HttpError(401, 'Incorrect email or password');
+      const kind = isAdmin ? 'staff' : 'resident';
+      const identifier = email.toLowerCase() || null;
+      const sec = await loadSecurity(db);
+      const failed = async (reason, status, message) => {
+        await recordAttempt(db, request, { kind, identifier, success: false, reason });
+        throw new HttpError(status, message);
+      };
+      await checkLockout(db, sec, { identifier, ip: clientIp(request) });
+      if (sec.altcha_enabled) {
+        try { await verifyAltcha(db, b.altcha); } catch (e) { await failed('bot check failed', 400, e.message); }
       }
-      if (!isAdmin && row.locked_at) throw new HttpError(403, LOCKED_MESSAGE);
-      if (!isAdmin) await recordResidentLogin(db, row.id, request);
-      const token = await createSession(db, isAdmin ? 'admin' : 'tenant', row.id);
-      return json({ ok: true, type: isAdmin ? 'admin' : 'tenant' }, 200, { 'Set-Cookie': sessionCookie(token) });
+      const row = isAdmin
+        ? await db.prepare('SELECT id, password_hash FROM admins WHERE email = ? COLLATE NOCASE').bind(email).first()
+        : await db.prepare('SELECT id, password_hash, locked_at FROM tenants WHERE email = ? COLLATE NOCASE AND password_hash IS NOT NULL ORDER BY move_in DESC LIMIT 1').bind(email).first();
+      // Check a password even when the email is unknown, so response times don't reveal which emails exist.
+      const ok = await verifyPassword(String(b.password || '').slice(0, 200), row?.password_hash || DUMMY_HASH);
+      if (!row || !ok) await failed(row ? 'wrong password' : 'unknown email', 401, 'Incorrect email or password');
+      if (!isAdmin && row.locked_at) await failed('account locked', 403, LOCKED_MESSAGE);
+      await recordAttempt(db, request, { kind, identifier, success: true });
+      if (isAdmin) await db.prepare("UPDATE admins SET last_login_at = datetime('now'), last_login_ip = ? WHERE id = ?").bind(clientIp(request), row.id).run();
+      else await recordResidentLogin(db, row.id, request);
+      const hours = isAdmin ? sec.staff_session_hours : sec.resident_session_days * 24;
+      const token = await createSession(db, isAdmin ? 'admin' : 'tenant', row.id, { hours });
+      return json({ ok: true, type: isAdmin ? 'admin' : 'tenant' }, 200, { 'Set-Cookie': sessionCookie(token, hours * 3600) });
     }
     if (action === 'activate' && method === 'POST') {
       // Resident sets up portal access using their account number + the email on file.
       const b = await body(request);
-      const t = await db.prepare('SELECT id, password_hash, locked_at FROM tenants WHERE account_number = ? AND email = ?')
-        .bind(String(b.account_number || '').trim(), String(b.email || '').trim()).first();
-      if (!t) throw new HttpError(400, 'No resident found with that account number and email. Contact the office.');
-      if (t.locked_at) throw new HttpError(403, LOCKED_MESSAGE);
-      if (t.password_hash) throw new HttpError(409, 'This account is already activated. Sign in, or ask the office to reset your access.');
-      validatePassword(b.password);
+      const sec = await loadSecurity(db);
+      const account = String(b.account_number || '').trim().slice(0, 64);
+      const identifier = account ? `account ${account.toLowerCase()}` : null;
+      const failed = async (reason, status, message) => {
+        await recordAttempt(db, request, { kind: 'activate', identifier, success: false, reason });
+        throw new HttpError(status, message);
+      };
+      await checkLockout(db, sec, { identifier, ip: clientIp(request) });
+      if (sec.altcha_enabled) {
+        try { await verifyAltcha(db, b.altcha); } catch (e) { await failed('bot check failed', 400, e.message); }
+      }
+      validatePassword(b.password, sec.min_password_length);
+      const t = await db.prepare('SELECT id, password_hash, locked_at FROM tenants WHERE account_number = ? AND email = ? COLLATE NOCASE')
+        .bind(account, String(b.email || '').trim()).first();
+      if (!t) await failed('account number and email do not match', 400, 'No resident found with that account number and email. Contact the office.');
+      if (t.locked_at) await failed('account locked', 403, LOCKED_MESSAGE);
+      if (t.password_hash) await failed('already activated', 409, 'This account is already activated. Sign in, or ask the office to reset your access.');
+      await recordAttempt(db, request, { kind: 'activate', identifier, success: true });
       await db.prepare("UPDATE tenants SET password_hash = ?, activated_at = datetime('now') WHERE id = ?").bind(await hashPassword(b.password), t.id).run();
       await recordResidentLogin(db, t.id, request);
-      const token = await createSession(db, 'tenant', t.id);
-      return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(token) });
+      const hours = sec.resident_session_days * 24;
+      const token = await createSession(db, 'tenant', t.id, { hours });
+      return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(token, hours * 3600) });
     }
     if (action === 'stop-view-as' && method === 'POST') {
       // Leave a "log in as a resident" preview and restore the staff member's own session.
@@ -901,8 +943,12 @@ async function handle({ request, env }) {
       const b = await body(request);
       const t = await db.prepare('SELECT password_hash FROM tenants WHERE id = ?').bind(tid).first();
       if (!(await verifyPassword(String(b.current_password || ''), t.password_hash))) throw new HttpError(400, 'Current password is incorrect');
-      validatePassword(b.new_password);
-      await db.prepare('UPDATE tenants SET password_hash = ? WHERE id = ?').bind(await hashPassword(b.new_password), tid).run();
+      validatePassword(b.new_password, (await loadSecurity(db)).min_password_length);
+      // A new password signs out the resident's other devices.
+      await db.batch([
+        db.prepare('UPDATE tenants SET password_hash = ? WHERE id = ?').bind(await hashPassword(b.new_password), tid),
+        db.prepare("DELETE FROM sessions WHERE user_type = 'tenant' AND user_id = ? AND token != ?").bind(tid, session.token),
+      ]);
       return json({ ok: true });
     }
     throw new HttpError(404, 'Not found');
@@ -995,6 +1041,30 @@ async function handle({ request, env }) {
     if (method === 'POST' && id === 'test-email') return json(await sendTestEmail(db, (await body(request)).to));
   }
 
+  // ---- Settings → Security
+  if (name === 'security') {
+    if (method === 'GET' && !id) return json(await loadSecurity(db));
+    if (method === 'PUT' && !id) return json(await saveSecurity(db, await body(request)));
+    if (method === 'GET' && id === 'activity') return json(await signInActivity(db, { failedOnly: url.searchParams.get('failed') === '1' }));
+    if (method === 'POST' && id === 'clear-lockouts') return json(await clearLockouts(db, (await body(request)).identifier || null));
+    if (method === 'GET' && id === 'sessions') {
+      const r = await db.prepare(`SELECT
+          SUM(user_type = 'admin' AND impersonated_by IS NULL) AS staff, SUM(user_type = 'tenant' AND impersonated_by IS NULL) AS residents
+        FROM sessions WHERE expires_at > ?`).bind(new Date().toISOString()).first();
+      return json({ staff: r?.staff || 0, residents: r?.residents || 0 });
+    }
+    if (method === 'POST' && id === 'sign-out-all') {
+      // Everyone (staff and residents) is signed out, except the person doing it.
+      const who = (await body(request)).who;
+      const sql = who === 'residents' ? "DELETE FROM sessions WHERE user_type = 'tenant'"
+        : who === 'staff' ? "DELETE FROM sessions WHERE user_type = 'admin' AND token != ?"
+        : 'DELETE FROM sessions WHERE token != ?';
+      const st = db.prepare(sql);
+      const r = await (who === 'residents' ? st : st.bind(session.token)).run();
+      return json({ signed_out: r.meta?.changes ?? 0 });
+    }
+  }
+
   // ---- Settings → System: storage, stack and backups
   if (name === 'system' && method === 'GET') {
     if (!id) return json(await systemInfo(db, request));
@@ -1005,12 +1075,12 @@ async function handle({ request, env }) {
   }
 
   if (name === 'admins') {
-    if (method === 'GET' && !id) return json((await db.prepare('SELECT id, email, name, created_at FROM admins ORDER BY email').all()).results);
+    if (method === 'GET' && !id) return json((await db.prepare('SELECT id, email, name, created_at, last_login_at, last_login_ip FROM admins ORDER BY email').all()).results);
     if (method === 'POST' && !id) {
       const b = await body(request);
       const email = coerce('email', b.email, 'Email');
       if (!email) throw new HttpError(400, 'Email is required');
-      validatePassword(b.password);
+      validatePassword(b.password, (await loadSecurity(db)).min_password_length);
       await db.prepare('INSERT INTO admins (email, name, password_hash) VALUES (?, ?, ?)').bind(email, b.name || null, await hashPassword(b.password)).run();
       return json({ ok: true });
     }
@@ -1018,8 +1088,12 @@ async function handle({ request, env }) {
       const b = await body(request);
       const a = await db.prepare('SELECT password_hash FROM admins WHERE id = ?').bind(session.user_id).first();
       if (!(await verifyPassword(String(b.current_password || ''), a.password_hash))) throw new HttpError(400, 'Current password is incorrect');
-      validatePassword(b.new_password);
-      await db.prepare('UPDATE admins SET password_hash = ? WHERE id = ?').bind(await hashPassword(b.new_password), session.user_id).run();
+      validatePassword(b.new_password, (await loadSecurity(db)).min_password_length);
+      // A new password signs out this staff member's other devices.
+      await db.batch([
+        db.prepare('UPDATE admins SET password_hash = ? WHERE id = ?').bind(await hashPassword(b.new_password), session.user_id),
+        db.prepare("DELETE FROM sessions WHERE user_type = 'admin' AND user_id = ? AND token != ?").bind(session.user_id, session.token),
+      ]);
       return json({ ok: true });
     }
     if (method === 'DELETE' && id) {

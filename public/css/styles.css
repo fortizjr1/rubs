@@ -415,3 +415,15 @@ label.check { display: flex; gap: .5rem; align-items: flex-start; font-weight: 4
 label.check input { margin-top: .2rem; }
 @media (max-width: 960px) { .sys-grid { grid-template-columns: 1fr; } }
 dl.kv dd { overflow-wrap: anywhere; }
+
+/* settings → security */
+.checklist { list-style: none; padding: 0; margin: 0; display: grid; gap: .55rem; }
+.checklist li { display: flex; gap: .6rem; align-items: flex-start; color: var(--text); }
+.checklist .chk { flex: none; display: inline-grid; place-items: center; width: 1.3rem; height: 1.3rem; border-radius: 50%; font-size: .75rem; font-weight: 700; background: #dcfae6; color: var(--ok); }
+.checklist li.off .chk { background: #fef0c7; color: var(--warn); }
+.sec-form label.check { margin-bottom: 1rem; }
+.sec-form label.check .help { display: block; font-weight: 400; color: var(--muted); font-size: .8rem; margin-top: .2rem; }
+.tabs.m0 { margin: 0; border: 0; }
+/* ALTCHA widget on the sign-in forms */
+.altcha-wrap { margin: .25rem 0 1rem; }
+.altcha-wrap altcha-widget { display: block; --altcha-max-width: 100%; }

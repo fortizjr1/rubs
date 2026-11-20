@@ -3,6 +3,8 @@
 import { api, esc, money, date, fullName, toast, modal, closeModal, confirmBox, table, onActions } from './ui.js';
 import { statementsPdf } from './shared/statement-pdf.js';
 
+const propertyLabel = (p) => (p.active ? p.name : `${p.name} (inactive)`);
+
 const statusBadge = (s) => `<span class="badge ${esc(s)}">${esc(s === 'finalized' ? 'finalized' : s)}</span>`;
 const pct = (n) => `${Math.round(Number(n) * 100) / 100}%`;
 
@@ -46,7 +48,7 @@ export async function runsView(el, { propertyId, filters = {} }) {
       4) <b>Email</b> the PDF statements, download them for printing, and <b>export</b> the charges to Rent Manager.</div>
     <div class="topbar"><form class="row filters" data-filters>
       ${propertyId ? '' : `<select name="property_id"><option value="">All properties</option>
-        ${props.map((p) => `<option value="${p.id}" ${String(filters.property_id) === String(p.id) ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`}
+        ${props.map((p) => `<option value="${p.id}" ${String(filters.property_id) === String(p.id) ? 'selected' : ''}>${esc(propertyLabel(p))}</option>`).join('')}</select>`}
       <select name="status">${[['', 'Any status'], ['draft', 'Draft'], ['calculated', 'Calculated'], ['finalized', 'Finalized']]
         .map(([v, l]) => `<option value="${v}" ${filters.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select></form>
       <button class="primary" data-action="add">+ New billing batch</button></div>
@@ -60,15 +62,17 @@ export async function runsView(el, { propertyId, filters = {} }) {
 // --------------------------------------------------------------- create / edit
 
 export async function runForm(values = {}) {
+  // Inactive (e.g. sold) properties stay selectable for a final bill, listed after the active ones.
   const props = await api('/admin/properties');
   if (!props.length) return toast('Add a property first', true);
+  if (!values.property_id) values = { ...values, property_id: (props.find((p) => p.active) || props[0]).id };
   const editing = Boolean(values.id);
   const m = modal(`<h2>${editing ? 'Edit billing batch' : 'New billing batch'}</h2>
     <p class="muted small">Enter the bill exactly as the utility company sent it. Leave a utility blank if it's not on this bill.</p>
     <div class="error" hidden></div>
     <form class="form-grid" novalidate>
       <div class="field full"><label>Property *</label><select name="property_id" ${editing ? 'disabled' : ''}>
-        ${props.map((p) => `<option value="${p.id}" ${String(p.id) === String(values.property_id) ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
+        ${props.map((p) => `<option value="${p.id}" ${String(p.id) === String(values.property_id) ? 'selected' : ''}>${esc(propertyLabel(p))}</option>`).join('')}</select></div>
       <div class="field"><label>Utility company</label><input name="vendor" value="${esc(values.vendor || '')}" placeholder="City of Tallahassee"></div>
       <div class="field"><label>Utility account #</label><input name="vendor_account" value="${esc(values.vendor_account || '')}"></div>
       <div class="field"><label>Service period start *</label><input type="date" name="period_start" required value="${esc(values.period_start || '')}"></div>

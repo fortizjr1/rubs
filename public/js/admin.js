@@ -63,10 +63,13 @@ async function listPage(title, render) {
 // --------------------------------------------------------------- shared lookups
 
 const getProperties = () => api('/admin/properties');
+// Pickers for new tenants, units and imports only offer active properties (plus `keepId`, e.g. a tenant's current property).
+const getActiveProperties = async (keepId) => (await getProperties()).filter((p) => p.active || p.id == keepId);
+const propertyLabel = (p) => (p.active ? p.name : `${p.name} (inactive)`);
 const getUnits = (propertyId) => api('/admin/units' + (propertyId ? `?property_id=${propertyId}` : ''));
 const getUtilities = (propertyId) => api('/admin/utilities' + (propertyId ? `?property_id=${propertyId}` : ''));
 const statusBadge = (s) => `<span class="badge ${esc(s)}">${esc(s)}</span>`;
-const propertyOptions = (props) => props.map((p) => [p.id, p.name]);
+const propertyOptions = (props) => props.map((p) => [p.id, propertyLabel(p)]);
 
 // --------------------------------------------------------------- dashboard
 
@@ -79,7 +82,7 @@ async function dashboard() {
   const div = mount(`<div class="topbar"><h1>Dashboard</h1>
       <div class="row"><button data-action="import">Import tenants</button><button class="primary" data-action="newRun">+ New billing batch</button></div></div>
     <div class="grid cards mb">
-      ${stat('Properties', c.properties, '#/properties')}
+      ${stat('Active properties', c.properties + (c.inactive_properties ? `<span class="small muted"> · ${c.inactive_properties} inactive</span>` : ''), '#/properties')}
       ${stat('Total units', c.total_units, '#/properties')}
       ${stat('Occupied', c.occupied_units, '#/properties')}
       ${stat('Vacant', Math.max(0, c.total_units - c.occupied_units), '#/properties')}
@@ -133,14 +136,20 @@ const PROPERTY_FIELDS = [
   { name: 'notes', label: 'Notes', type: 'textarea', full: true },
 ];
 
+let propertyStatus = 'active';
+
 async function propertiesPage() {
-  const props = await getProperties();
+  const all = await getProperties();
+  const props = all.filter((p) => propertyStatus === 'all' || (propertyStatus === 'active' ? p.active : !p.active));
+  const count = (st) => all.filter((p) => (st === 'active' ? p.active : !p.active)).length;
   const div = mount(`<div class="topbar"><h1>Properties</h1>
       <div class="row"><a class="btn" href="/api/admin/export/properties.csv">Export CSV</a>
       <button class="primary" data-action="add">+ Add property</button></div></div>
+    <div class="tabs">${[['active', `Active (${count('active')})`], ['inactive', `Inactive (${count('inactive')})`], ['all', `All (${all.length})`]]
+      .map(([k, l]) => `<button data-action="status" data-status="${k}" class="${k === propertyStatus ? 'active' : ''}">${l}</button>`).join('')}</div>
     ${table({
       columns: [
-        { label: 'Property', value: (p) => `<a href="#/properties/${p.id}">${esc(p.name)}</a>` },
+        { label: 'Property', value: (p) => `<a href="#/properties/${p.id}">${esc(p.name)}</a>${p.active ? '' : `<div class="small"><span class="badge">inactive</span> ${p.inactive_date ? `since ${date(p.inactive_date)}` : ''}${p.inactive_reason ? ` · ${esc(p.inactive_reason)}` : ''}</div>`}` },
         { label: 'RM code', value: 'rm_property_code' },
         { label: 'Address', value: (p) => esc([p.address, p.city, p.state, p.zip].filter(Boolean).join(', ')) },
         { label: 'Total units', value: (p) => `${p.units_total}${unitsWarning(p) ? `<div class="small warn">${unitsWarning(p, true)}</div>` : ''}`, cls: 'num' },
@@ -150,17 +159,22 @@ async function propertiesPage() {
       ],
       rows: props,
       actions: (p) => `<button class="link" data-action="edit" data-id="${p.id}">Edit</button>
+        ${p.active ? `<button class="link" data-action="deactivate" data-id="${p.id}">Mark inactive</button>`
+          : `<button class="link" data-action="reactivate" data-id="${p.id}">Reactivate</button>`}
         <button class="link danger" data-action="del" data-id="${p.id}">Delete</button>`,
-      empty: 'No properties yet. Add your first property to get started.',
+      empty: propertyStatus === 'inactive' ? 'No inactive properties.' : 'No properties yet. Add your first property to get started.',
     })}`);
   onActions(div, {
+    status: ({ status }) => { propertyStatus = status; propertiesPage(); },
+    deactivate: ({ id }) => deactivateProperty(all.find((p) => p.id == id), propertiesPage),
+    reactivate: ({ id }) => reactivateProperty(all.find((p) => p.id == id), propertiesPage),
     add: () => formModal({
       title: 'Add property', fields: PROPERTY_FIELDS, wide: true, values: { day_count: 'meter', due_days: 28 },
       onSubmit: async (d) => { const p = await api('/admin/properties', { method: 'POST', body: d }); location.hash = `#/properties/${p.id}/utilities`; toast('Property added. Next, set up its utilities.'); },
     }),
     edit: ({ id }) => editProperty(props.find((p) => p.id == id), propertiesPage),
     del: async ({ id }) => {
-      if (!(await confirmBox('Delete this property? Only possible if it has no units or billing batches.'))) return;
+      if (!(await confirmBox('Delete this property? Only possible if it has no units or billing batches. To keep its history (e.g. after a sale), use Mark inactive instead.'))) return;
       await api(`/admin/properties/${id}`, { method: 'DELETE' }); toast('Deleted'); propertiesPage();
     },
   });
@@ -177,6 +191,28 @@ function unitsWarning(p, short = false) {
     : `${p.unit_count} units are set up on the Units tab, but the property's total units is ${p.total_units}. Check the total in Edit property.`;
 }
 
+function deactivateProperty(p, after) {
+  formModal({
+    title: `Mark ${p.name} inactive`, submitLabel: 'Mark inactive',
+    intro: `<p class="small">Use this when a property is sold or no longer managed. It is hidden from the Properties list, the Dashboard counts,
+      the Tenants page and the pickers for new tenants and units. All billing batches, statements and exports are kept,
+      you can still create a final billing batch for it, and residents can still see their past statements. You can reactivate it at any time.</p>`,
+    fields: [
+      { name: 'inactive_date', label: 'Inactive since', type: 'date', required: true },
+      { name: 'inactive_reason', label: 'Reason', placeholder: 'Sold' },
+    ],
+    values: { inactive_date: new Date().toISOString().slice(0, 10), inactive_reason: 'Sold' },
+    onSubmit: async (d) => { await api(`/admin/properties/${p.id}`, { method: 'PUT', body: { ...d, active: false } }); toast(`${p.name} marked inactive`); after(); },
+  });
+}
+
+async function reactivateProperty(p, after) {
+  if (!(await confirmBox(`Reactivate ${p.name}? It will show up again in the Properties list, Dashboard and pickers.`, 'Reactivate'))) return;
+  await api(`/admin/properties/${p.id}`, { method: 'PUT', body: { active: true } });
+  toast(`${p.name} is active again`);
+  after();
+}
+
 function editProperty(p, after) {
   formModal({
     title: 'Edit property', fields: PROPERTY_FIELDS, values: p, wide: true,
@@ -190,7 +226,10 @@ async function propertyDetail(id, tab) {
   const div = mount(`<div class="topbar"><div><a href="#/properties" class="small">← Properties</a><h1>${esc(p.name)}</h1>
       <div class="muted small">${esc([p.address, p.city, p.state, p.zip].filter(Boolean).join(', '))}
       ${p.rm_property_code ? ` · RM code: ${esc(p.rm_property_code)}` : ''}</div></div>
-      <button data-action="edit">Edit property</button></div>
+      <div class="row">${p.active ? '<button data-action="deactivate">Mark inactive</button>' : '<button data-action="reactivate">Reactivate</button>'}
+      <button data-action="edit">Edit property</button></div></div>
+    ${p.active ? '' : `<div class="notice"><b>Inactive property</b>${p.inactive_date ? ` since ${date(p.inactive_date)}` : ''}${p.inactive_reason ? ` · ${esc(p.inactive_reason)}` : ''}.
+      Its history is kept and you can still bill it, but it's left out of the Dashboard, the Tenants page and pickers for new data.</div>`}
     <div class="grid cards mb">
       <div class="card stat"><div class="label">Total units</div><div class="value">${p.units_total}</div></div>
       <div class="card stat"><div class="label">Occupied</div><div class="value">${p.occupied_units}</div>
@@ -201,7 +240,12 @@ async function propertyDetail(id, tab) {
     ${unitsWarning(p) ? `<div class="notice small">${esc(unitsWarning(p))}</div>` : ''}
     <div class="tabs">${tabs.map(([k, l]) => `<a href="#/properties/${id}/${k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}</div>
     <div data-tab></div>`);
-  onActions(div, { edit: () => editProperty(p, () => propertyDetail(id, tab)) });
+  const again = () => propertyDetail(id, tab);
+  onActions(div, {
+    edit: () => editProperty(p, again),
+    deactivate: () => deactivateProperty(p, again),
+    reactivate: () => reactivateProperty(p, again),
+  });
   const el = div.querySelector('[data-tab]');
   const opts = { propertyId: Number(id) };
   if (tab === 'units') await unitsView(el, opts);
@@ -213,7 +257,7 @@ async function propertyDetail(id, tab) {
 // --------------------------------------------------------------- units
 
 async function unitsView(el, { propertyId }) {
-  const [units, props] = await Promise.all([getUnits(propertyId), getProperties()]);
+  const [units, props] = await Promise.all([getUnits(propertyId), getActiveProperties(propertyId)]);
   const fields = [
     { name: 'property_id', label: 'Property', type: 'select', options: propertyOptions(props), required: true },
     { name: 'unit_number', label: 'Unit number', required: true },
@@ -263,7 +307,7 @@ const NEW_UNIT = '__new';
 
 // Tenant add/edit form: pick a property, then a unit at that property, or add a new unit on the spot.
 async function tenantForm({ title, values = {}, propertyId, onSave }) {
-  const [props, units] = await Promise.all([getProperties(), getUnits()]);
+  const [props, units] = await Promise.all([getActiveProperties(values.property_id || propertyId), getUnits()]);
   if (!props.length) return toast('Add a property first (Properties → Add property).', true);
   const startProp = values.property_id || propertyId || props[0].id;
   const unitOptions = (pid) => [
@@ -321,13 +365,14 @@ async function tenantForm({ title, values = {}, propertyId, onSave }) {
 async function tenantsView(el, { propertyId, filters = {} }) {
   const qs = new URLSearchParams();
   if (propertyId || filters.property_id) qs.set('property_id', propertyId || filters.property_id);
+  else qs.set('property_active', '1'); // tenants of inactive (e.g. sold) properties only show when that property is picked
   if (filters.tenant_status) qs.set('tenant_status', filters.tenant_status);
   if (filters.q) qs.set('q', filters.q);
   const [tenants, props] = await Promise.all([api('/admin/tenants?' + qs), propertyId ? [] : getProperties()]);
   const div = document.createElement('div');
   div.innerHTML = `<div class="topbar"><form class="row filters" data-filters>
-        ${propertyId ? '' : `<select name="property_id"><option value="">All properties</option>
-          ${props.map((p) => `<option value="${p.id}" ${String(filters.property_id) === String(p.id) ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>`}
+        ${propertyId ? '' : `<select name="property_id"><option value="">All active properties</option>
+          ${props.map((p) => `<option value="${p.id}" ${String(filters.property_id) === String(p.id) ? 'selected' : ''}>${esc(propertyLabel(p))}</option>`).join('')}</select>`}
         <select name="tenant_status">
           ${[['', 'All residents'], ['current', 'Current'], ['future', 'Future move-ins'], ['past', 'Moved out']]
             .map(([v, l]) => `<option value="${v}" ${filters.tenant_status === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
@@ -392,14 +437,14 @@ async function tenantsView(el, { propertyId, filters = {} }) {
  * opts: {title, help, endpoint, options: [{key, label, checked}], chunk, summary(total) -> text}
  */
 async function csvImportModal(propertyId, after, opts) {
-  const props = await getProperties();
+  const props = await getActiveProperties(propertyId);
   const m = modal(`<h2>${esc(opts.title)}</h2>
     <div class="notice small">${opts.help}</div>
     <div class="error" hidden></div>
     <div class="form-grid">
       <div class="field full"><label>CSV file</label><input type="file" accept=".csv,text/csv" data-file></div>
       <div class="field"><label>Property (for rows without a Property column)</label>
-        <select data-prop><option value="">—</option>${props.map((p) => `<option value="${p.id}" ${p.id == propertyId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select></div>
+        <select data-prop><option value="">—</option>${props.map((p) => `<option value="${p.id}" ${p.id == propertyId ? 'selected' : ''}>${esc(propertyLabel(p))}</option>`).join('')}</select></div>
       <div class="field">${opts.options.map((o) => `<label><input type="checkbox" data-opt="${o.key}" ${o.checked ? 'checked' : ''}> ${esc(o.label)}</label>`).join('')}
         <label><input type="checkbox" data-skip> Skip rows with errors and import the rest</label></div>
     </div>
@@ -552,7 +597,7 @@ async function exportsPage() {
         Map these columns in your Rent Manager charge import template. You can also export a single batch from its page.</p>
       <form class="form-grid" data-export>
         <div class="field"><label>Property</label><select name="property_id"><option value="">All properties</option>
-          ${props.map((p) => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select></div>
+          ${props.map((p) => `<option value="${p.id}">${esc(propertyLabel(p))}</option>`).join('')}</select></div>
         <div class="field"></div>
         <div class="field"><label>Charge date from</label><input type="date" name="from" value="${first.toISOString().slice(0, 10)}"></div>
         <div class="field"><label>Charge date to</label><input type="date" name="to"></div>

@@ -21,6 +21,7 @@ const RESOURCES = {
     fields: {
       name: ['text', 'Property name', true], rm_property_code: ['text', 'Rent Manager property code'],
       total_units: ['int', 'Total units'],
+      active: ['bool', 'Active'], inactive_date: ['date', 'Inactive since'], inactive_reason: ['text', 'Reason'],
       address: ['text', 'Address'], city: ['text', 'City'], state: ['text', 'State'], zip: ['text', 'ZIP'],
       phone: ['text', 'Office phone'], email: ['email', 'Office email'], notes: ['text', 'Notes'],
       due_days: ['int', 'Days until due'], day_count: [['meter', 'calendar'], 'Day count'],
@@ -46,9 +47,9 @@ const RESOURCES = {
                 WHERE u.property_id = p.id AND t.move_in <= date('now')
                   AND (t.move_out IS NULL OR t.move_out >= date('now'))) AS current_tenants
            FROM properties p) x WHERE 1=1`,
-    filters: { id: 'x.id' },
+    filters: { id: 'x.id', active: 'x.active' },
     search: ['x.name', 'x.address', 'x.rm_property_code'],
-    order: 'x.name',
+    order: 'x.active DESC, x.name',
   },
   units: {
     table: 'units',
@@ -83,7 +84,7 @@ const RESOURCES = {
                   WHEN t.move_out IS NOT NULL AND t.move_out < date('now') THEN 'past'
                   ELSE 'current' END AS status
            FROM tenants t JOIN units u ON u.id = t.unit_id JOIN properties p ON p.id = u.property_id WHERE 1=1`,
-    filters: { property_id: 'u.property_id', unit_id: 't.unit_id', id: 't.id' },
+    filters: { property_id: 'u.property_id', unit_id: 't.unit_id', id: 't.id', property_active: 'p.active' },
     search: ['t.first_name', 't.last_name', 't.email', 't.account_number', 'u.unit_number', 't.phone'],
     order: 'p.name, u.unit_number COLLATE NOCASE, t.move_in DESC',
     validate: (r) => {
@@ -176,6 +177,8 @@ async function createResource(db, name, input) {
   }
   if (name === 'properties') {
     for (const k of ['due_days', 'day_count', 'tax_label', 'billing_fee_cents', 'fee_label']) if (data[k] === null) delete data[k];
+    data.active = data.active === 0 ? 0 : 1;
+    if (data.active) { data.inactive_date = null; data.inactive_reason = null; } else data.inactive_date ??= today();
   }
   if (name === 'tenants') data.occupants ??= 1;
   if (name === 'units') for (const k of ['sqft', 'bedrooms', 'bathrooms']) data[k] ??= 0;
@@ -198,6 +201,11 @@ async function updateResource(db, name, id, input) {
   if ('recovery_pct' in input && blank(input.recovery_pct)) data.recovery_pct = 100;
   const stmts = [];
   if (name === 'properties') {
+    if ('active' in data) {
+      // Reactivating clears the inactive date/reason; deactivating defaults the date to today.
+      if (data.active) { data.inactive_date = null; data.inactive_reason = null; }
+      else data.inactive_date = data.inactive_date ?? existing.inactive_date ?? today();
+    }
     if ('due_days' in data && data.due_days === null) data.due_days = 28;
     if ('day_count' in data && data.day_count === null) data.day_count = 'meter';
     if ('tax_label' in data && data.tax_label === null) data.tax_label = 'Utility tax';
@@ -489,14 +497,18 @@ async function exportTable(db, name, url) {
 async function adminDashboard(db) {
   const [counts, ytd, recent] = await db.batch([
     db.prepare(`SELECT
-      (SELECT COUNT(*) FROM properties) AS properties,
-      (SELECT COUNT(*) FROM units) AS units,
-      (SELECT COALESCE(SUM(COALESCE(p.total_units, (SELECT COUNT(*) FROM units u WHERE u.property_id = p.id))), 0) FROM properties p) AS total_units,
-      (SELECT COUNT(DISTINCT u.id) FROM units u JOIN tenants t ON t.unit_id = u.id
-         WHERE t.move_in <= date('now') AND (t.move_out IS NULL OR t.move_out >= date('now'))) AS occupied_units,
-      (SELECT COUNT(*) FROM tenants WHERE move_in <= date('now') AND (move_out IS NULL OR move_out >= date('now'))) AS current_tenants,
-      (SELECT COUNT(*) FROM tenants WHERE move_in > date('now')) AS upcoming_move_ins,
-      (SELECT COUNT(*) FROM tenants WHERE move_out BETWEEN date('now') AND date('now','+30 days')) AS move_outs_30d,
+      (SELECT COUNT(*) FROM properties WHERE active = 1) AS properties,
+      (SELECT COUNT(*) FROM properties WHERE active = 0) AS inactive_properties,
+      (SELECT COUNT(*) FROM units u JOIN properties p ON p.id = u.property_id WHERE p.active = 1) AS units,
+      (SELECT COALESCE(SUM(COALESCE(p.total_units, (SELECT COUNT(*) FROM units u WHERE u.property_id = p.id))), 0) FROM properties p WHERE p.active = 1) AS total_units,
+      (SELECT COUNT(DISTINCT u.id) FROM units u JOIN tenants t ON t.unit_id = u.id JOIN properties p ON p.id = u.property_id
+         WHERE p.active = 1 AND t.move_in <= date('now') AND (t.move_out IS NULL OR t.move_out >= date('now'))) AS occupied_units,
+      (SELECT COUNT(*) FROM tenants t JOIN units u ON u.id = t.unit_id JOIN properties p ON p.id = u.property_id
+         WHERE p.active = 1 AND t.move_in <= date('now') AND (t.move_out IS NULL OR t.move_out >= date('now'))) AS current_tenants,
+      (SELECT COUNT(*) FROM tenants t JOIN units u ON u.id = t.unit_id JOIN properties p ON p.id = u.property_id
+         WHERE p.active = 1 AND t.move_in > date('now')) AS upcoming_move_ins,
+      (SELECT COUNT(*) FROM tenants t JOIN units u ON u.id = t.unit_id JOIN properties p ON p.id = u.property_id
+         WHERE p.active = 1 AND t.move_out BETWEEN date('now') AND date('now','+30 days')) AS move_outs_30d,
       (SELECT COUNT(*) FROM billing_runs WHERE status != 'finalized') AS open_batches,
       (SELECT COUNT(*) FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id JOIN tenants t ON t.id = s.tenant_id
          WHERE r.status = 'finalized' AND s.emailed_at IS NULL AND t.email IS NOT NULL) AS unsent_statements,

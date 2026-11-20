@@ -93,6 +93,12 @@ In Cloudflare go to **Security → WAF → Rate limiting rules** (the free plan 
 4. Click **Export CSV for Rent Manager** and import the file into Rent Manager.
 5. Moves: set the move-out date or add the new tenant before calculating. Proration is automatic.
 
+**Selling a property**
+- Open the property and click **Mark inactive**, then enter the date and a reason such as "Sold".
+- It is hidden from the Properties list (see the **Inactive** filter), the Dashboard counts, the Tenants page and the pickers for new tenants, units and imports.
+- Billing history, statements and exports are kept. You can still create a final billing batch for it, and its residents can still see past statements.
+- Click **Reactivate** to undo.
+
 **Fixing a mistake**
 - **Wrong amount or dates:** if the batch is finalized, click **Reopen**. Then click **Edit bill** and recalculate.
 - **Undo a whole batch:** click **Delete batch**. This removes the batch and every resident statement in it, including from the resident portal.

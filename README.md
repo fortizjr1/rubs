@@ -148,7 +148,7 @@ Any staff member can see the portal exactly as a resident does. Click **Log in a
 
 ### Resident portal
 
-Residents open the same URL and click **First time? Activate**. They enter their **account number** and the **email on file**, then choose a password. Residents only see finalized statements and can download them as PDFs. If **Settings → Company & email → Online payment link** is filled in (your Rent Manager Tenant Web Access address), the portal shows a **Pay online** button that opens it in a new tab. The app itself does not take payments or know balances. Staff can reset a resident's login from the Tenants page.
+Residents open the same URL and click **First time? Activate**. They enter their **account number** and the **email on file**, then choose a password. Residents only see finalized statements and can download them as PDFs. If **Settings → Company & email → Online payment link** is filled in (your Rent Manager Tenant Web Access address), the portal shows a **Pay online** button that opens it in a new tab, and every statement email gets a **Pay online** button and link (or put {pay_link} in the message). The app itself does not take payments or know balances. Staff can reset a resident's login from the Tenants page.
 
 ## Run locally
 

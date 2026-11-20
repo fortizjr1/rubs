@@ -401,7 +401,8 @@ export async function emailSettingsView(el) {
         ${SMTP_FIELDS.slice(1).map(input).join('')}
       </div></div>
     <div class="card mb"><h2>Statement email</h2>
-      <p class="muted small">Placeholders: {first_name} {name} {property} {unit} {account} {amount} {due_date} {statement_date} {period} {phone} {email}.
+      <p class="muted small">Placeholders: {first_name} {name} {property} {unit} {account} {amount} {due_date} {statement_date} {period} {phone} {email} {pay_link}.
+        When an online payment link is set above, a <b>Pay online</b> button is added to every statement email automatically.
         The PDF statement is attached automatically.</p>
       <div class="field"><label for="s_email_subject">Subject</label><input id="s_email_subject" name="email_subject" value="${esc(s.email_subject)}"></div>
       <div class="field"><label for="s_email_body">Message</label><textarea id="s_email_body" name="email_body" rows="14">${esc(s.email_body)}</textarea></div>

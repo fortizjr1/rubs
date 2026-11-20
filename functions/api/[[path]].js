@@ -20,6 +20,7 @@ const RESOURCES = {
     table: 'properties',
     fields: {
       name: ['text', 'Property name', true], rm_property_code: ['text', 'Rent Manager property code'],
+      total_units: ['int', 'Total units'],
       address: ['text', 'Address'], city: ['text', 'City'], state: ['text', 'State'], zip: ['text', 'ZIP'],
       phone: ['text', 'Office phone'], email: ['email', 'Office email'], notes: ['text', 'Notes'],
       due_days: ['int', 'Days until due'], day_count: [['meter', 'calendar'], 'Day count'],
@@ -28,18 +29,26 @@ const RESOURCES = {
       payment_text: ['text', 'Payment text'], questions_text: ['text', 'Questions text'], footer_text: ['text', 'Footer text'],
     },
     validate: (r) => {
+      if (r.total_units != null && (r.total_units < 0 || r.total_units > 100000)) throw new HttpError(400, 'Total units must be a positive number');
       if (r.due_days != null && (r.due_days < 0 || r.due_days > 120)) throw new HttpError(400, 'Days until due must be between 0 and 120');
       if (r.billing_fee_cents != null && r.billing_fee_cents < 0) throw new HttpError(400, 'Billing fee cannot be negative');
     },
-    list: `SELECT p.*,
+    // units_total: the number entered on the property, or the units set up if none was entered.
+    // occupied_units: units with at least one current resident today. vacant_units = total - occupied.
+    list: `SELECT x.*, COALESCE(x.total_units, x.unit_count) AS units_total,
+             MAX(COALESCE(x.total_units, x.unit_count) - x.occupied_units, 0) AS vacant_units
+           FROM (SELECT p.*,
              (SELECT COUNT(*) FROM units u WHERE u.property_id = p.id) AS unit_count,
+             (SELECT COUNT(DISTINCT u.id) FROM units u JOIN tenants t ON t.unit_id = u.id
+                WHERE u.property_id = p.id AND t.move_in <= date('now')
+                  AND (t.move_out IS NULL OR t.move_out >= date('now'))) AS occupied_units,
              (SELECT COUNT(*) FROM tenants t JOIN units u ON u.id = t.unit_id
                 WHERE u.property_id = p.id AND t.move_in <= date('now')
                   AND (t.move_out IS NULL OR t.move_out >= date('now'))) AS current_tenants
-           FROM properties p WHERE 1=1`,
-    filters: { id: 'p.id' },
-    search: ['p.name', 'p.address', 'p.rm_property_code'],
-    order: 'p.name',
+           FROM properties p) x WHERE 1=1`,
+    filters: { id: 'x.id' },
+    search: ['x.name', 'x.address', 'x.rm_property_code'],
+    order: 'x.name',
   },
   units: {
     table: 'units',
@@ -394,6 +403,9 @@ async function adminDashboard(db) {
     db.prepare(`SELECT
       (SELECT COUNT(*) FROM properties) AS properties,
       (SELECT COUNT(*) FROM units) AS units,
+      (SELECT COALESCE(SUM(COALESCE(p.total_units, (SELECT COUNT(*) FROM units u WHERE u.property_id = p.id))), 0) FROM properties p) AS total_units,
+      (SELECT COUNT(DISTINCT u.id) FROM units u JOIN tenants t ON t.unit_id = u.id
+         WHERE t.move_in <= date('now') AND (t.move_out IS NULL OR t.move_out >= date('now'))) AS occupied_units,
       (SELECT COUNT(*) FROM tenants WHERE move_in <= date('now') AND (move_out IS NULL OR move_out >= date('now'))) AS current_tenants,
       (SELECT COUNT(*) FROM tenants WHERE move_in > date('now')) AS upcoming_move_ins,
       (SELECT COUNT(*) FROM tenants WHERE move_out BETWEEN date('now') AND date('now','+30 days')) AS move_outs_30d,

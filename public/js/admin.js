@@ -80,7 +80,9 @@ async function dashboard() {
       <div class="row"><button data-action="import">Import tenants</button><button class="primary" data-action="newRun">+ New billing batch</button></div></div>
     <div class="grid cards mb">
       ${stat('Properties', c.properties, '#/properties')}
-      ${stat('Units', c.units, '#/properties')}
+      ${stat('Total units', c.total_units, '#/properties')}
+      ${stat('Occupied', c.occupied_units, '#/properties')}
+      ${stat('Vacant', Math.max(0, c.total_units - c.occupied_units), '#/properties')}
       ${stat('Current residents', c.current_tenants, '#/tenants')}
       ${stat('Upcoming move-ins', c.upcoming_move_ins, '#/tenants')}
       ${stat('Move-outs next 30 days', c.move_outs_30d, '#/tenants')}
@@ -106,6 +108,7 @@ async function dashboard() {
 const PROPERTY_FIELDS = [
   { name: 'name', label: 'Property name', required: true, full: true },
   { name: 'rm_property_code', label: 'Rent Manager property code', help: 'Short name / ID used in Rent Manager. Goes into the export.' },
+  { name: 'total_units', label: 'Total units', type: 'number', min: 0, help: 'How many units the property has. Used for the occupied / vacant counts.' },
   { name: 'address', label: 'Street address' },
   { name: 'city', label: 'City' },
   { name: 'state', label: 'State' },
@@ -140,8 +143,10 @@ async function propertiesPage() {
         { label: 'Property', value: (p) => `<a href="#/properties/${p.id}">${esc(p.name)}</a>` },
         { label: 'RM code', value: 'rm_property_code' },
         { label: 'Address', value: (p) => esc([p.address, p.city, p.state, p.zip].filter(Boolean).join(', ')) },
-        { label: 'Units', value: 'unit_count', cls: 'num' },
-        { label: 'Current residents', value: 'current_tenants', cls: 'num' },
+        { label: 'Total units', value: (p) => `${p.units_total}${unitsWarning(p) ? `<div class="small warn">${unitsWarning(p, true)}</div>` : ''}`, cls: 'num' },
+        { label: 'Occupied', value: 'occupied_units', cls: 'num' },
+        { label: 'Vacant', value: 'vacant_units', cls: 'num' },
+        { label: 'Occupancy', value: (p) => occupancy(p), cls: 'num' },
       ],
       rows: props,
       actions: (p) => `<button class="link" data-action="edit" data-id="${p.id}">Edit</button>
@@ -161,6 +166,17 @@ async function propertiesPage() {
   });
 }
 
+const occupancy = (p) => (p.units_total ? `${Math.round((p.occupied_units / p.units_total) * 1000) / 10}%` : '—');
+
+// The split rules only know about units set up on the Units tab, so flag a mismatch with the total.
+function unitsWarning(p, short = false) {
+  if (p.total_units == null || p.total_units === p.unit_count) return '';
+  if (short) return `${p.unit_count} set up`;
+  return p.unit_count < p.total_units
+    ? `${p.unit_count} of ${p.total_units} units are set up on the Units tab. Add the other ${p.total_units - p.unit_count} (with square footage and bedrooms) so vacant units are counted correctly when the utility bill is split.`
+    : `${p.unit_count} units are set up on the Units tab, but the property's total units is ${p.total_units}. Check the total in Edit property.`;
+}
+
 function editProperty(p, after) {
   formModal({
     title: 'Edit property', fields: PROPERTY_FIELDS, values: p, wide: true,
@@ -175,6 +191,14 @@ async function propertyDetail(id, tab) {
       <div class="muted small">${esc([p.address, p.city, p.state, p.zip].filter(Boolean).join(', '))}
       ${p.rm_property_code ? ` · RM code: ${esc(p.rm_property_code)}` : ''}</div></div>
       <button data-action="edit">Edit property</button></div>
+    <div class="grid cards mb">
+      <div class="card stat"><div class="label">Total units</div><div class="value">${p.units_total}</div></div>
+      <div class="card stat"><div class="label">Occupied</div><div class="value">${p.occupied_units}</div>
+        <div class="muted small">${p.current_tenants} current resident${p.current_tenants === 1 ? '' : 's'}</div></div>
+      <div class="card stat"><div class="label">Vacant</div><div class="value">${p.vacant_units}</div></div>
+      <div class="card stat"><div class="label">Occupancy</div><div class="value">${occupancy(p)}</div></div>
+    </div>
+    ${unitsWarning(p) ? `<div class="notice small">${esc(unitsWarning(p))}</div>` : ''}
     <div class="tabs">${tabs.map(([k, l]) => `<a href="#/properties/${id}/${k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}</div>
     <div data-tab></div>`);
   onActions(div, { edit: () => editProperty(p, () => propertyDetail(id, tab)) });

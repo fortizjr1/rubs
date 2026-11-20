@@ -141,3 +141,4 @@ button.primary.danger-fill { background: var(--danger); border-color: var(--dang
 button.primary.danger-fill:hover { background: #b42318; }
 .mt-sm { margin-top: .5rem; }
 .modal ul { margin: .25rem 0 .75rem; padding-left: 1.25rem; }
+.warn { color: var(--warn); }

@@ -40,6 +40,8 @@ export async function startResident(app, user, logout, stopPreview) {
   const latest = statements[0];
   const address = me.mailing_address || [[me.address, `Apt #${me.unit_number}`].filter(Boolean).join(' '), me.city, [me.state, me.zip].filter(Boolean).join(' ')].filter(Boolean).join(', ');
   const office = [me.office_phone, me.office_email].filter(Boolean);
+  const payUrl = /^https:\/\//i.test(user.payment_url || '') ? user.payment_url : '';
+  const payButton = (cls) => (payUrl ? `<a class="btn ${cls}" href="${esc(payUrl)}" target="_blank" rel="noopener noreferrer">${ICONS.card}<span>Pay online</span></a>` : '');
 
   const wrap = document.createElement('div');
   wrap.className = 'portal';
@@ -67,13 +69,15 @@ export async function startResident(app, user, logout, stopPreview) {
             <div class="due-meta">Statement ${date(latest.statement_date)} · Service ${date(latest.period_start)} – ${date(latest.period_end)}</div>
           </div>
           <div class="due-actions">
+            ${payButton('pay')}
             <a class="btn light" href="${pdfUrl(latest)}" target="_blank" rel="noopener">${ICONS.download}<span>Download statement</span></a>
           </div>`
         : `<div><div class="due-label">Latest utility charges</div>
             <div class="due-amount none">No statements yet</div>
-            <div class="due-meta">Your utility statements will appear here once the office posts them.</div></div>`}
+            <div class="due-meta">Your utility statements will appear here once the office posts them.</div></div>
+          ${payUrl ? `<div class="due-actions">${payButton('pay')}</div>` : ''}`}
         <p class="due-disclaimer">This shows what was billed to you for utilities, not your current balance. Charges are posted to your
-          resident account in Rent Manager. Check your balance and make payments there, or contact the office.</p>
+          resident account in Rent Manager. ${payUrl ? 'Use <b>Pay online</b> to sign in to the Rent Manager resident portal, check your balance and make a payment, or contact the office.' : 'Check your balance and make payments there, or contact the office.'}</p>
       </section>
 
       <div class="portal-grid">
@@ -101,6 +105,9 @@ export async function startResident(app, user, logout, stopPreview) {
             <dt>Move-in</dt><dd>${date(me.move_in)}</dd>
             ${me.move_out ? `<dt>Move-out</dt><dd>${date(me.move_out)}</dd>` : ''}</dl>
             <p class="muted small m0">These details are used to calculate your share. If something is wrong, contact the office.</p></div>
+          ${payUrl ? `<div class="card side-card pay-card"><h3>${ICONS.card}<span>Make a payment</span></h3>
+            <p class="small">Pay your utility charges with your rent through the Rent Manager resident portal (opens in a new tab).</p>
+            ${payButton('primary block')}</div>` : ''}
           <div class="card side-card help-card"><h3>Questions?</h3>
             <p class="small m0">${office.length ? `Contact the office: ${office.map(esc).join(' · ')}.` : 'Contact your leasing office.'}
               Please let them know if the number of people in your apartment changes.</p></div>

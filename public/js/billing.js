@@ -379,6 +379,7 @@ function emailAllModal(r, after) {
 
 const SETTINGS_FIELDS = [
   ['company_name', 'Management company name', 'text', 'Printed as "Managed by …" on statements.'],
+  ['payment_url', 'Online payment link (Rent Manager TWA)', 'url', 'Shown as a "Pay online" button in the resident portal, e.g. https://walden.twa.rentmanager.com/'],
 ];
 const SMTP_FIELDS = [
   ['smtp_host', 'SMTP server', 'text', 'Maileroo: smtp.maileroo.com'],

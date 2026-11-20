@@ -13,7 +13,7 @@ async function boot() {
   company = status.company_name || '';
   if (status.needsSetup) return setupScreen();
   if (!status.user) return loginScreen(location.hash === '#staff' ? 'staff' : 'resident');
-  const user = { ...status.user, company_name: company };
+  const user = { ...status.user, company_name: company, payment_url: status.payment_url || '' };
   if (user.type === 'admin') return startAdmin(app, user, logout);
   return startResident(app, user, logout, stopPreview);
 }

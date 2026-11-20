@@ -704,8 +704,9 @@ async function handle({ request, env }) {
         }
       }
       // Company name is shown on the sign-in page (it is printed on every statement anyway).
-      const company = await db.prepare("SELECT value FROM settings WHERE key = 'company_name'").first();
-      return json({ needsSetup, user, company_name: company?.value || '' });
+      const rows = (await db.prepare("SELECT key, value FROM settings WHERE key IN ('company_name', 'payment_url')").all()).results;
+      const setting = (k) => rows.find((r) => r.key === k)?.value || '';
+      return json({ needsSetup, user, company_name: setting('company_name'), payment_url: setting('payment_url') });
     }
     if (action === 'setup' && method === 'POST') {
       const b = await body(request);

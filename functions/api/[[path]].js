@@ -335,10 +335,10 @@ const RM_CHARGE_COLUMNS = [
   { label: 'TenantAccount', value: 'account_number' },
   { label: 'TenantName', value: (r) => [r.first_name, r.last_name].filter(Boolean).join(' ') },
   { label: 'ChargeType', value: (r) => r.line.charge_code },
-  { label: 'Amount', value: (r) => dollars(r.line.amount_cents) },
+  { label: 'Amount', value: (r) => (r.reverse ? '-' : '') + dollars(r.line.amount_cents) },
   { label: 'TransactionDate', value: 'charge_date' },
   { label: 'DueDate', value: 'due_date' },
-  { label: 'Comment', value: (r) => `${r.line.label} ${r.period_start} to ${r.period_end}` },
+  { label: 'Comment', value: (r) => `${r.reverse ? 'REVERSAL of ' : ''}${r.line.label} ${r.period_start} to ${r.period_end}` },
   { label: 'PeriodStart', value: 'period_start' },
   { label: 'PeriodEnd', value: 'period_end' },
 ];
@@ -348,9 +348,13 @@ async function exportCharges(db, url) {
                p.name AS property_name, p.rm_property_code, r.period_start, r.period_end, r.charge_date, r.due_date
              FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id JOIN tenants t ON t.id = s.tenant_id
              JOIN units u ON u.id = s.unit_id JOIN properties p ON p.id = r.property_id
-             WHERE r.status = 'finalized'`;
+             WHERE 1=1`;
   const args = [];
   const p = (k) => url.searchParams.get(k);
+  // reverse=1: the same rows with negative amounts, for statements already exported,
+  // to back them out of Rent Manager before a batch is deleted or corrected.
+  const reverse = p('reverse') === '1';
+  sql += reverse ? ' AND s.exported_at IS NOT NULL' : " AND r.status = 'finalized'";
   if (p('run_id')) { sql += ' AND r.id = ?'; args.push(p('run_id')); }
   if (p('property_id')) { sql += ' AND r.property_id = ?'; args.push(p('property_id')); }
   if (p('from')) { sql += ' AND r.charge_date >= ?'; args.push(p('from')); }
@@ -358,7 +362,8 @@ async function exportCharges(db, url) {
   if (p('unexported') === '1') sql += ' AND s.exported_at IS NULL';
   sql += ' ORDER BY p.name, r.period_end, u.unit_number COLLATE NOCASE';
   const statements = (await db.prepare(sql).bind(...args).all()).results;
-  const rows = statements.flatMap((s) => JSON.parse(s.lines).map((line) => ({ ...s, line })));
+  const rows = statements.flatMap((s) => JSON.parse(s.lines).map((line) => ({ ...s, line, reverse })));
+  if (reverse) return csvResponse(`rent-manager-REVERSAL-${today()}.csv`, toCSV(RM_CHARGE_COLUMNS, rows));
   if (p('mark') === '1' && statements.length) {
     const ids = statements.map((r) => r.id);
     const stmts = [];
@@ -567,7 +572,7 @@ async function handle({ request, env }) {
     if (method === 'GET' && id && action === 'pdf-data') return json(await statementRenderData(db, { runId: id }));
     if (method === 'POST' && !id) return json(await runDetail(db, await createRun(db, await body(request))), 201);
     if (method === 'PUT' && id) { await updateRun(db, id, await body(request)); return json(await runDetail(db, id)); }
-    if (method === 'DELETE' && id) { await deleteRun(db, id); return json({ ok: true }); }
+    if (method === 'DELETE' && id) return json(await deleteRun(db, id, url.searchParams.get('confirm')));
     if (method === 'POST' && action === 'calculate') return json(await calculateRun(db, id));
     if (method === 'POST' && (action === 'finalize' || action === 'reopen')) return json(await setRunStatus(db, id, action));
     throw new HttpError(404, 'Not found');

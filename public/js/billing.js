@@ -166,7 +166,7 @@ export async function runDetailPage(root, id) {
         ${r.status === 'finalized' ? `<button class="primary" data-action="emailAll">Email statements${unsent.length ? ` (${unsent.length})` : ''}</button>
           <a class="btn" href="/api/admin/export/charges.csv?run_id=${r.id}&mark=1" data-export>Export CSV for Rent Manager</a>
           <button data-action="reopen">Reopen</button>` : ''}
-        ${r.status !== 'finalized' ? '<button class="danger" data-action="del">Delete</button>' : ''}
+        <button class="danger" data-action="del">Delete batch</button>
       </div></div>
     <ol class="steps">
       ${step(1, 'Bill entered', true, false)}
@@ -239,10 +239,7 @@ export async function runDetailPage(root, id) {
       if (!(await confirmBox(`Reopen this batch for changes? Residents won't see it until it's finalized again.${warn}`, 'Reopen'))) return;
       await api(`/admin/runs/${id}/reopen`, { method: 'POST' }); toast('Batch reopened'); reload();
     },
-    del: async () => {
-      if (!(await confirmBox('Delete this billing batch and its statements?'))) return;
-      await api(`/admin/runs/${id}`, { method: 'DELETE' }); toast('Batch deleted'); location.hash = '#/billing';
-    },
+    del: () => deleteRunModal(r, emailable.length - unsent.length, exported),
     pdfAll: () => downloadAllPdfs(r),
     emailOne: async ({ id: sid }) => {
       const res = await api(`/admin/statements/${sid}/email`, { method: 'POST' });
@@ -250,6 +247,49 @@ export async function runDetailPage(root, id) {
       reload();
     },
     emailAll: () => emailAllModal(r, reload),
+  });
+}
+
+// Delete a batch and every resident statement created from it, at any stage.
+function deleteRunModal(r, emailedCount, exportedCount) {
+  const strict = r.status === 'finalized' || emailedCount > 0 || exportedCount > 0;
+  const n = r.statements.length;
+  const m = modal(`<h2>Delete this billing batch?</h2>
+    <p>${esc(r.property_name)} · ${esc(r.utilities || '')} · service ${date(r.period_start)} – ${date(r.period_end)}</p>
+    <p>This permanently deletes:</p>
+    <ul>
+      <li>the utility bill amounts entered for this batch (${money(r.city_total_cents)})</li>
+      <li><b>${n} resident statement${n === 1 ? '' : 's'}</b>${n ? ` totaling ${money(r.statements.reduce((t, s) => t + s.total_cents, 0))}` : ''}, including their PDFs and RUBS calculation details</li>
+      ${r.status === 'finalized' ? '<li>the statements residents can currently see in the resident portal</li>' : ''}
+    </ul>
+    <p class="muted small">Tenants, units, properties and split rules are not affected. To fix a mistake you can also use
+      ${r.status === 'finalized' ? '<b>Reopen</b>, then <b>Edit bill</b>' : '<b>Edit bill</b>'} instead of deleting.</p>
+    ${emailedCount ? `<div class="notice small"><b>${emailedCount} statement${emailedCount === 1 ? ' was' : 's were'} already emailed.</b>
+      Emails can't be recalled. Consider letting those residents know the statement was sent in error.</div>` : ''}
+    ${exportedCount ? `<div class="notice small"><b>${exportedCount} statement${exportedCount === 1 ? ' was' : 's were'} already exported to Rent Manager.</b>
+      Deleting here does not remove those charges from Rent Manager. Download the reversal file first. It has the same charges with
+      negative amounts, so you can import it into Rent Manager to cancel them.
+      <div class="row mt-sm"><a class="btn" href="/api/admin/export/charges.csv?run_id=${r.id}&reverse=1" data-reversal>Download reversal CSV for Rent Manager</a></div></div>` : ''}
+    ${strict ? `<div class="field"><label for="del_confirm">Type <b>DELETE</b> to confirm</label>
+      <input id="del_confirm" autocomplete="off" data-confirm></div>` : ''}
+    <div class="error" hidden></div>
+    <div class="footer"><button data-close>Cancel</button><button class="primary danger-fill" data-go ${strict ? 'disabled' : ''}>Delete batch</button></div>`);
+  const go = m.querySelector('[data-go]');
+  const input = m.querySelector('[data-confirm]');
+  input?.addEventListener('input', () => { go.disabled = input.value.trim() !== 'DELETE'; });
+  input?.focus();
+  go.addEventListener('click', async () => {
+    go.disabled = true;
+    try {
+      const qs = strict ? '?confirm=DELETE' : '';
+      const res = await api(`/admin/runs/${r.id}${qs}`, { method: 'DELETE' });
+      closeModal();
+      toast(`Batch deleted with ${res.deleted.statements} statement${res.deleted.statements === 1 ? '' : 's'}`);
+      location.hash = '#/billing';
+    } catch (e) {
+      const err = m.querySelector('.error');
+      err.textContent = e.message; err.hidden = false; go.disabled = false;
+    }
   });
 }
 

@@ -137,3 +137,7 @@ ol.steps li.current span { background: var(--primary); color: #fff; }
 .progress .bar { height: 100%; width: 0; background: var(--primary); transition: width .2s; }
 .log { max-height: 220px; overflow: auto; margin-top: .5rem; }
 .log .error { margin: .25rem 0; padding: .35rem .6rem; }
+button.primary.danger-fill { background: var(--danger); border-color: var(--danger); }
+button.primary.danger-fill:hover { background: #b42318; }
+.mt-sm { margin-top: .5rem; }
+.modal ul { margin: .25rem 0 .75rem; padding-left: 1.25rem; }

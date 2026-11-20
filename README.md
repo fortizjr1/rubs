@@ -91,6 +91,13 @@ In Cloudflare go to **Security → WAF → Rate limiting rules** (the free plan 
 4. Click **Export CSV for Rent Manager** and import the file into Rent Manager.
 5. Moves: set the move-out date or add the new tenant before calculating. Proration is automatic.
 
+**Fixing a mistake**
+- **Wrong amount or dates:** if the batch is finalized, click **Reopen**. Then click **Edit bill** and recalculate.
+- **Undo a whole batch:** click **Delete batch**. This removes the batch and every resident statement in it, including from the resident portal.
+  - A finalized, emailed or exported batch asks you to type DELETE to confirm.
+  - If the statements were already exported, download the **reversal CSV** first. It has the same charges with negative amounts. Import it into Rent Manager to cancel the charges there.
+  - Emails that were already sent can't be recalled.
+
 ### Rent Manager CSV columns
 
 `PropertyCode, Unit, TenantAccount, TenantName, ChargeType, Amount, TransactionDate, DueDate, Comment, PeriodStart, PeriodEnd`

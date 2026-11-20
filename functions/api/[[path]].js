@@ -81,7 +81,7 @@ const RESOURCES = {
     // move-out date yet, so their final bill still has to be produced.
     list: `SELECT t.id, t.unit_id, t.first_name, t.last_name, t.email, t.phone, t.account_number,
              t.mailing_address, t.forwarding_address, t.move_in, t.move_out, t.occupants, t.notes, t.created_at,
-             (t.password_hash IS NOT NULL) AS portal_active, t.last_login_at, t.last_login_ip, t.locked_at, t.locked_reason,
+             (t.password_hash IS NOT NULL) AS portal_active, t.activated_at, t.last_login_at, t.last_login_ip, t.locked_at, t.locked_reason,
              (t.move_out IS NOT NULL AND t.move_out <= date('now') AND t.move_out >= date('now', '-90 days')
                AND NOT EXISTS (SELECT 1 FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id
                  WHERE s.tenant_id = t.id AND r.status = 'finalized' AND r.period_end >= t.move_out)) AS final_pending,
@@ -163,9 +163,10 @@ async function listResource(db, res, url) {
     res.search.forEach(() => args.push(`%${q}%`));
   }
   const status = url.searchParams.get('tenant_status');
-  if (res.table === 'tenants' && ['current', 'past', 'future', 'final_pending'].includes(status)) {
-    sql = status === 'final_pending' ? `SELECT * FROM (${sql}) WHERE final_pending = 1` : `SELECT * FROM (${sql}) WHERE status = ?`;
-    if (status !== 'final_pending') args.push(status);
+  if (res.table === 'tenants' && ['current', 'past', 'future', 'final_pending', 'signed_up', 'not_signed_up'].includes(status)) {
+    const special = { final_pending: 'final_pending = 1', signed_up: 'portal_active = 1', not_signed_up: 'portal_active = 0' };
+    sql = special[status] ? `SELECT * FROM (${sql}) WHERE ${special[status]}` : `SELECT * FROM (${sql}) WHERE status = ?`;
+    if (!special[status]) args.push(status);
     return (await db.prepare(sql + ' ORDER BY property_name, unit_number COLLATE NOCASE').bind(...args).all()).results;
   }
   sql += ` ORDER BY ${res.order} LIMIT 5000`;
@@ -818,7 +819,7 @@ async function handle({ request, env }) {
       if (t.locked_at) throw new HttpError(403, LOCKED_MESSAGE);
       if (t.password_hash) throw new HttpError(409, 'This account is already activated. Sign in, or ask the office to reset your access.');
       validatePassword(b.password);
-      await db.prepare('UPDATE tenants SET password_hash = ? WHERE id = ?').bind(await hashPassword(b.password), t.id).run();
+      await db.prepare("UPDATE tenants SET password_hash = ?, activated_at = datetime('now') WHERE id = ?").bind(await hashPassword(b.password), t.id).run();
       await recordResidentLogin(db, t.id, request);
       const token = await createSession(db, 'tenant', t.id);
       return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(token) });
@@ -959,7 +960,7 @@ async function handle({ request, env }) {
   }
   if (name === 'tenants' && id && action === 'reset-portal' && method === 'POST') {
     await db.batch([
-      db.prepare('UPDATE tenants SET password_hash = NULL WHERE id = ?').bind(id),
+      db.prepare('UPDATE tenants SET password_hash = NULL, activated_at = NULL WHERE id = ?').bind(id),
       db.prepare("DELETE FROM sessions WHERE user_type = 'tenant' AND user_id = ?").bind(id),
     ]);
     return json({ ok: true });

@@ -429,7 +429,7 @@ async function tenantsView(el, { propertyId, filters = {} }) {
         ${propertyId ? '' : `<select name="property_id"><option value="">All active properties</option>
           ${props.map((p) => `<option value="${p.id}" ${String(filters.property_id) === String(p.id) ? 'selected' : ''}>${esc(propertyLabel(p))}</option>`).join('')}</select>`}
         <select name="tenant_status">
-          ${[['', 'All residents'], ['current', 'Current'], ['future', 'Future move-ins'], ['past', 'Moved out'], ['final_pending', 'Final bill pending']]
+          ${[['', 'All residents'], ['current', 'Current'], ['future', 'Future move-ins'], ['past', 'Moved out'], ['final_pending', 'Final bill pending'], ['signed_up', 'Signed up for portal'], ['not_signed_up', 'Not signed up']]
             .map(([v, l]) => `<option value="${v}" ${filters.tenant_status === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
         <input name="q" placeholder="Search name, email, unit, account…" value="${esc(filters.q || '')}">
         <button type="submit">Search</button></form>
@@ -451,6 +451,7 @@ async function tenantsView(el, { propertyId, filters = {} }) {
             value="${esc(t.occupants)}" data-occ="${t.id}" data-was="${esc(t.occupants)}" aria-label="Number of people for ${esc(fullName(t))}"
             title="Type a number, then press Enter or Tab to save"><span class="inline-ok" aria-hidden="true"></span></span>` },
         { label: 'Status', value: (t) => statusBadge(t.status) + (t.final_pending ? ' <span class="badge draft" title="Moved out: their move-out date is not covered by a finalized billing batch yet">final bill pending</span>' : '') },
+        { label: 'Signed up', value: signedUpCell },
         { label: 'Portal', value: portalCell, cls: 'portal-col' },
       ],
       rows: tenants,
@@ -745,14 +746,22 @@ const dateTime = (sqlUtc) => {
   return d.toLocaleString('en-US', { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }), hour: 'numeric', minute: '2-digit' });
 };
 
-/** Portal column: activated or not, last sign-in time and IP, locked state. */
+/** Signed up column: did the resident ever create their own portal login, and when. */
+function signedUpCell(t) {
+  if (!t.portal_active) return '<span class="muted">No</span>';
+  return t.activated_at
+    ? `<span class="badge posted">Yes</span><div class="small muted">${esc(dateTime(t.activated_at))}</div>`
+    : '<span class="badge posted">Yes</span><div class="small muted">date not recorded</div>';
+}
+
+/** Portal column: locked state, last sign-in time and IP. */
 function portalCell(t) {
   const lines = [];
   if (t.locked_at) {
     lines.push(`<span class="badge danger">locked</span> <span class="small muted">${esc(dateTime(t.locked_at))}</span>`);
     if (t.locked_reason) lines.push(`<div class="small muted">${esc(t.locked_reason)}</div>`);
   } else if (t.portal_active) lines.push('<span class="badge posted">active</span>');
-  else lines.push('<span class="small muted">Not activated</span>');
+  else lines.push('<span class="small muted">—</span>');
   if (t.portal_active) {
     lines.push(t.last_login_at
       ? `<div class="small" title="Last sign-in and its IP address">Last login ${esc(dateTime(t.last_login_at))}</div><div class="small muted">IP ${esc(t.last_login_ip || 'unknown')}</div>`

@@ -148,6 +148,7 @@ Any staff member can see the portal exactly as a resident does. Click **Log in a
 
 ### Resident portal security
 
+- The **Signed up** column shows whether the resident created their own portal login (Yes + date, or No). Filter the Tenants list by "Signed up for portal" / "Not signed up" to see who still hasn't. **Reset login** sets it back to No.
 - The Tenants list **Portal** column shows whether a resident has activated their account, plus their **last sign-in time and IP address**. Staff previews ("Log in as a resident") are not counted.
 - **Lock** signs the resident out right away and blocks signing in and re-activating ("This account is locked. Please contact the office."). It takes an optional staff-only reason. **Unlock** restores access with the same password.
 - Locking only affects portal access. Billing, statements and emails continue as normal. Staff can still preview a locked account.

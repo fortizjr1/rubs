@@ -485,3 +485,30 @@ dl.kv dd { overflow-wrap: anywhere; }
 /* date fields: keep iOS Safari's date input inside its box */
 input[type=date] { -webkit-appearance: none; appearance: none; min-width: 0; display: block; min-height: 2.65rem; text-align: left; }
 input[type=date]::-webkit-date-and-time-value { text-align: left; }
+
+/* forgot password */
+button.link.inline { padding: 0; font-size: inherit; }
+.notice.ok-notice { background: #ecfdf3; border-color: #abefc6; color: #05603a; }
+
+/* checks before finalizing */
+.checks-panel { background: var(--card); border-radius: var(--radius); box-shadow: var(--shadow); padding: .9rem 1.1rem; margin-bottom: 1rem; }
+.checks-head { display: flex; align-items: center; gap: .6rem; margin-bottom: .5rem; }
+ul.checks { list-style: none; padding: 0; margin: 0; display: grid; gap: .55rem; }
+ul.checks li { display: flex; gap: .6rem; align-items: flex-start; }
+ul.checks .chk { flex: none; display: inline-grid; place-items: center; width: 1.3rem; height: 1.3rem; border-radius: 50%; font-size: .75rem; font-weight: 700; background: #dcfae6; color: var(--ok); }
+ul.checks li.warn .chk { background: #fef0c7; color: var(--warn); }
+.check-items { margin-top: .2rem; color: var(--text); }
+.notice.warn-notice { background: #fffaeb; border-color: #fedf89; color: #93370d; }
+
+/* bill history chart */
+.chart-card { margin-bottom: 1rem; }
+.chart-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; flex-wrap: wrap; margin-bottom: .25rem; }
+.legend { list-style: none; display: flex; gap: 1rem; flex-wrap: wrap; margin: 0; padding: 0; font-size: .85rem; color: var(--text); }
+.legend li { display: inline-flex; align-items: center; gap: .4rem; }
+svg.bill-chart { width: 100%; height: auto; display: block; margin-top: .5rem; }
+svg.bill-chart .grid { stroke: #eceef2; stroke-width: 1; }
+svg.bill-chart .baseline { stroke: #c4c9d2; stroke-width: 1; }
+svg.bill-chart .axis-label { font-size: 11px; fill: var(--muted); font-family: inherit; }
+svg.bill-chart .chart-hit .hit { fill: transparent; }
+svg.bill-chart .chart-hit:hover .hit, svg.bill-chart .chart-hit:focus .hit { fill: #f2f4f7; }
+svg.bill-chart .chart-hit:focus { outline: none; }

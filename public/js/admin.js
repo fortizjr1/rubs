@@ -1069,7 +1069,7 @@ async function exportsPage() {
 // --------------------------------------------------------------- settings
 
 async function settingsPage(tab) {
-  const tabs = [['email', 'Company & email'], ['staff', 'Staff accounts'], ['security', 'Security'], ['system', 'System & storage']];
+  const tabs = [['email', 'Company & email'], ['staff', 'Staff accounts'], ['security', 'Security'], ['activity', 'Activity log'], ['system', 'System & storage']];
   const div0 = mount(`<div class="topbar"><h1>Settings</h1></div>
     <div class="tabs">${tabs.map(([k, l]) => `<a href="#/settings/${k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}</div>
     <div data-tab></div>`);
@@ -1077,6 +1077,7 @@ async function settingsPage(tab) {
   if (tab === 'email') return emailSettingsView(el);
   if (tab === 'system') return systemView(el);
   if (tab === 'security') return securityView(el);
+  if (tab === 'activity') return activityView(el);
   const admins = await api('/admin/admins');
   const div = document.createElement('div');
   el.replaceChildren(div);
@@ -1263,7 +1264,7 @@ function backupSql(data, info) {
 
 // --------------------------------------------------------------- settings → security
 
-const KIND_LABEL = { staff: 'Staff sign-in', resident: 'Tenant sign-in', activate: 'Tenant activation', setup: 'First-time setup' };
+const KIND_LABEL = { staff: 'Staff sign-in', resident: 'Tenant sign-in', activate: 'Tenant activation', setup: 'First-time setup', reset: 'Password reset' };
 // A short "Chrome on Windows" style label from the browser's user agent.
 function deviceLabel(ua) {
   if (!ua) return '—';
@@ -1373,4 +1374,48 @@ async function securityView(el) {
       toast(`${r.signed_out} session${r.signed_out === 1 ? '' : 's'} signed out`); again();
     },
   });
+}
+
+// --------------------------------------------------------------- settings → activity log
+
+let activityFilters = { admin_id: '', kind: '' };
+
+// Link an activity entry to the item it was about, when that page exists.
+function activityLink(path) {
+  const m = path.match(/^\/api\/admin\/(runs|properties|statements)\/(\d+)/);
+  if (!m) return '';
+  if (m[1] === 'runs') return `#/billing/${m[2]}`;
+  if (m[1] === 'properties') return `#/properties/${m[2]}`;
+  return '';
+}
+
+async function activityView(el) {
+  const qs = new URLSearchParams(Object.entries(activityFilters).filter(([, v]) => v));
+  const [rows, admins] = await Promise.all([api('/admin/activity?' + qs), api('/admin/admins')]);
+  const div = document.createElement('div');
+  div.innerHTML = `
+    <div class="topbar"><div><h2 class="m0">Staff activity log</h2>
+      <div class="muted small">Every change made by staff: who, what and when. Sign-ins are on the Security tab. Kept for one year.</div></div>
+      <form class="row filters" data-filters>
+        <select name="admin_id"><option value="">All staff</option>${admins.map((a) => `<option value="${a.id}" ${String(activityFilters.admin_id) === String(a.id) ? 'selected' : ''}>${esc(a.name || a.email)}</option>`).join('')}</select>
+        <select name="kind">${[['', 'Everything'], ['billing', 'Billing & exports'], ['tenants', 'Tenants, units & imports'], ['settings', 'Settings & staff']]
+          .map(([v, l]) => `<option value="${v}" ${activityFilters.kind === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      </form></div>
+    ${table({
+      columns: [
+        { label: 'When', value: (r) => esc(dateTime(r.created_at)), cls: 'dates' },
+        { label: 'Who', value: (r) => esc(r.admin_name || '—') },
+        { label: 'What', value: (r) => { const href = activityLink(r.path); return href ? `<a href="${href}">${esc(r.summary)}</a>` : esc(r.summary); } },
+        { label: 'IP address', value: (r) => esc(r.ip || '—'), cls: 'hide-lg' },
+      ],
+      rows,
+      pageKey: 'activity',
+      empty: 'No staff activity recorded yet. Changes made from now on will appear here.',
+    })}`;
+  el.replaceChildren(div);
+  div.querySelectorAll('[data-filters] select').forEach((sel) => sel.addEventListener('change', () => {
+    activityFilters = Object.fromEntries(new FormData(div.querySelector('[data-filters]')));
+    resetPage('activity');
+    activityView(el);
+  }));
 }

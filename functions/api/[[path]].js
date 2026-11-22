@@ -9,11 +9,14 @@ import {
 import { HttpError, json, body, today, blank, coerce } from '../../lib/util.js';
 import { loadSettings, saveSettings, sendTestEmail } from '../../lib/settings.js';
 import { systemInfo, backupPage, getPlan, setPlan } from '../../lib/system.js';
+import { activityPrepare, activityRecord, listActivity } from '../../lib/activity.js';
+import { requestReset, checkResetToken, hashToken } from '../../lib/password-reset.js';
+import { ownerReportPdf } from '../../lib/owner-report.js';
 import {
   loadSecurity, saveSecurity, validatePassword, clientIp, checkLockout, recordAttempt, signInActivity, clearLockouts,
   createAltchaChallenge, verifyAltcha,
 } from '../../lib/security.js';
-import {
+import { runChecks,
   listRuns, runDetail, createRun, updateRun, deleteRun, calculateRun, setRunStatus, testUtility,
   statementRenderData, pdfResponse, emailStatement,
 } from '../../lib/billing.js';
@@ -895,6 +898,54 @@ async function handle({ request, env }) {
       const token = await createSession(db, 'tenant', t.id, { hours });
       return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(token, hours * 3600) });
     }
+    if (action === 'forgot' && method === 'POST') {
+      // Tenant "Forgot password": always the same answer, so the form can't reveal who has an account.
+      const b = await body(request);
+      const sec = await loadSecurity(db);
+      const email = String(b.email || '').trim().slice(0, 254);
+      const identifier = email ? `reset ${email.toLowerCase()}` : null;
+      await checkLockout(db, sec, { identifier, ip: clientIp(request) });
+      if (sec.altcha_enabled) {
+        try { await verifyAltcha(db, b.altcha); } catch (e) {
+          await recordAttempt(db, request, { kind: 'reset', identifier, success: false, reason: 'bot check failed' });
+          throw e;
+        }
+      }
+      if (!coerce('email', email || null, 'Email')) throw new HttpError(400, 'Enter the email address the office has on file for you');
+      const r = await requestReset(db, email, url.origin);
+      // Requests for unknown emails count as failures, so guessing many addresses gets locked out.
+      await recordAttempt(db, request, { kind: 'reset', identifier, success: r.sent, reason: r.sent ? 'reset email sent' : 'no portal account' });
+      return json({ ok: true, message: "If that email has a tenant portal account, we've sent a link to reset the password. It expires in 60 minutes." });
+    }
+    if (action === 'reset-check' && method === 'POST') {
+      await checkResetToken(db, (await body(request)).token);
+      return json({ ok: true });
+    }
+    if (action === 'reset' && method === 'POST') {
+      const b = await body(request);
+      const sec = await loadSecurity(db);
+      await checkLockout(db, sec, { identifier: null, ip: clientIp(request) });
+      let tid;
+      try { tid = await checkResetToken(db, b.token); } catch (e) {
+        await recordAttempt(db, request, { kind: 'reset', identifier: null, success: false, reason: 'invalid or expired reset link' });
+        throw e;
+      }
+      validatePassword(b.password, sec.min_password_length);
+      const t = await db.prepare('SELECT id, email, locked_at FROM tenants WHERE id = ?').bind(tid).first();
+      if (!t) throw new HttpError(400, 'This reset link is not valid. Please request a new one.');
+      if (t.locked_at) throw new HttpError(403, LOCKED_MESSAGE);
+      // New password; the link is used up; every other signed-in device is signed out.
+      await db.batch([
+        db.prepare('UPDATE tenants SET password_hash = ? WHERE id = ?').bind(await hashPassword(String(b.password), hashIterations(await getPlan(db))), tid),
+        db.prepare("UPDATE password_resets SET used_at = datetime('now') WHERE token_hash = ?").bind(await hashToken(b.token)),
+        db.prepare("DELETE FROM sessions WHERE user_type = 'tenant' AND user_id = ?").bind(tid),
+      ]);
+      await recordAttempt(db, request, { kind: 'reset', identifier: t.email ? `reset ${t.email.toLowerCase()}` : null, success: true, reason: 'password changed' });
+      await recordResidentLogin(db, tid, request);
+      const hours = sec.resident_session_days * 24;
+      const token = await createSession(db, 'tenant', tid, { hours });
+      return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(token, hours * 3600) });
+    }
     if (action === 'stop-view-as' && method === 'POST') {
       // Leave a "log in as a tenant" preview and restore the staff member's own session.
       const s = await getSession(db, request);
@@ -1050,6 +1101,11 @@ async function handle({ request, env }) {
     if (method === 'PUT' && id) { await updateRun(db, id, await body(request)); return json(await runDetail(db, id)); }
     if (method === 'DELETE' && id) return json(await deleteRun(db, id, url.searchParams.get('confirm')));
     if (method === 'POST' && action === 'calculate') return json(await calculateRun(db, id));
+    if (method === 'GET' && action === 'checks') return json(await runChecks(db, id));
+    if (method === 'GET' && action === 'owner-report.pdf') {
+      const { bytes, filename } = await ownerReportPdf(db, id);
+      return new Response(bytes, { headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': `inline; filename="${filename}"`, 'Cache-Control': 'no-store' } });
+    }
     if (method === 'POST' && (action === 'finalize' || action === 'reopen')) return json(await setRunStatus(db, id, action));
     throw new HttpError(404, 'Not found');
   }
@@ -1068,6 +1124,8 @@ async function handle({ request, env }) {
     if (method === 'PUT' && !id) return json(await saveSettings(db, await body(request)));
     if (method === 'POST' && id === 'test-email') return json(await sendTestEmail(db, (await body(request)).to));
   }
+
+  if (name === 'activity' && method === 'GET') return json(await listActivity(db, url));
 
   // ---- Settings → Security
   if (name === 'security') {
@@ -1148,8 +1206,21 @@ async function handle({ request, env }) {
 }
 
 export async function onRequest(context) {
+  // Staff activity log: every change under /api/admin (and Rent Manager exports that mark statements).
+  let pre = null;
   try {
-    return await handle(context);
+    const url = new URL(context.request.url);
+    const seg = url.pathname.replace(/\/+$/, '').split('/').slice(2);
+    const changes = context.request.method !== 'GET' || (seg[1] === 'export' && url.searchParams.get('mark') === '1');
+    if (seg[0] === 'admin' && changes && context.env.DB) pre = await activityPrepare(context.env.DB, context.request, seg, url);
+  } catch { pre = null; }
+  try {
+    const res = await handle(context);
+    if (pre && res.status < 400) {
+      const done = activityRecord(context.env.DB, pre, res).catch((e) => console.error('activity log', e));
+      if (context.waitUntil) context.waitUntil(done); else await done;
+    }
+    return res;
   } catch (e) {
     if (e instanceof HttpError) return json({ error: e.message }, e.status);
     const msg = String(e?.message || e);

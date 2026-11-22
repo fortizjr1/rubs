@@ -56,11 +56,64 @@ export async function runsView(el, { propertyId, filters = {} }) {
       <select name="status">${[['', 'Any status'], ['draft', 'Draft'], ['calculated', 'Calculated'], ['finalized', 'Finalized']]
         .map(([v, l]) => `<option value="${v}" ${filters.status === v ? 'selected' : ''}>${l}</option>`).join('')}</select></form>
       <button class="primary" data-action="add">+ New billing batch</button></div>
+    ${propertyId ? billHistoryChart(runs) : ''}
     ${runsTable(runs, !propertyId)}`;
   el.replaceChildren(div);
   div.querySelectorAll('[data-filters] select').forEach((s) => s.addEventListener('change', () =>
     runsView(el, { propertyId, filters: Object.fromEntries(new FormData(s.form)) })));
   onActions(div, { add: () => runForm({ property_id: propertyId }) });
+}
+
+// --------------------------------------------------------------- bill history chart
+
+// Two series, validated with the dataviz palette checker (light surface): city bill vs. what tenants paid.
+const SERIES = [
+  { key: 'city', label: 'City utility bill', color: '#2a78d6' },
+  { key: 'paid', label: 'Water & sewer billed to tenants', color: '#eb6834' },
+];
+const shortMonth = (iso) => { const [y, m] = iso.split('-'); return `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][Number(m) - 1]} '${y.slice(2)}`; };
+const niceMax = (v) => { if (v <= 0) return 100; const p = 10 ** Math.floor(Math.log10(v)); return Math.ceil(v / p / (v / p > 5 ? 2 : 1)) * p * (v / p > 5 ? 2 : 1); };
+const axisMoney = (cents) => { const d = cents / 100; return d >= 1000 ? `$${(d / 1000).toLocaleString('en-US', { maximumFractionDigits: 1 })}k` : `$${Math.round(d)}`; };
+// Bar with a 4px rounded top, square at the baseline.
+const barPath = (x, y, w, h) => { const r = Math.min(4, w / 2, h); return `M${x},${y + h}V${y + r}Q${x},${y} ${x + r},${y}H${x + w - r}Q${x + w},${y} ${x + w},${y + r}V${y + h}Z`; };
+
+/** City bill vs. water & sewer billed to tenants for the property's last 12 finalized batches. */
+function billHistoryChart(runs) {
+  const data = runs.filter((r) => r.status === 'finalized' && r.summary)
+    .sort((a, b) => a.period_end.localeCompare(b.period_end)).slice(-12)
+    .map((r) => ({ id: r.id, end: r.period_end, start: r.period_start, city: r.summary.city_total_cents || 0,
+      paid: r.summary.rubs_share_cents ?? r.summary.resident_share_cents ?? 0, discount: r.summary.discount_cents || 0 }));
+  if (!data.length) return '';
+  const W = 720, H = 250, padL = 52, padR = 12, padT = 14, padB = 34;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const max = niceMax(Math.max(...data.map((d) => Math.max(d.city, d.paid))));
+  const y = (v) => padT + plotH - (v / max) * plotH;
+  const band = plotW / data.length;
+  const bw = Math.min(24, (band - 14) / 2);
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((t) => t * max);
+  const groups = data.map((d, i) => {
+    const cx = padL + band * i + band / 2;
+    const bars = SERIES.map((s, j) => {
+      const v = d[s.key];
+      const x = cx - bw - 1 + j * (bw + 2); // 2px gap between the pair
+      const h = Math.max(0, (v / max) * plotH);
+      return h > 0 ? `<path d="${barPath(x, y(v), bw, h)}" fill="${s.color}"/>` : '';
+    }).join('');
+    const rate = d.city ? `${(Math.round((d.paid / d.city) * 1000) / 10).toFixed(1)}%` : '—';
+    const tip = `${d.start} to ${d.end}\nCity utility bill: ${money(d.city)}\nBilled to tenants (water & sewer): ${money(d.paid)}\nRecovery: ${rate}${d.discount ? `\nOwner discount: ${money(d.discount)}` : ''}`;
+    return `<a href="#/billing/${d.id}" class="chart-hit" aria-label="${esc(tip.replace(/\n/g, ', '))}">
+      <title>${esc(tip)}</title>
+      <rect x="${cx - band / 2}" y="${padT}" width="${band}" height="${plotH}" fill="transparent" class="hit"/>${bars}
+      <text x="${cx}" y="${H - 12}" text-anchor="middle" class="axis-label">${shortMonth(d.end)}</text></a>`;
+  }).join('');
+  const grid = ticks.map((t) => `<line x1="${padL}" x2="${W - padR}" y1="${y(t)}" y2="${y(t)}" class="${t ? 'grid' : 'baseline'}"/>
+    <text x="${padL - 8}" y="${y(t) + 4}" text-anchor="end" class="axis-label">${axisMoney(t)}</text>`).join('');
+  return `<section class="card chart-card">
+    <div class="chart-head"><h3 class="m0">Bill history</h3>
+      <ul class="legend">${SERIES.map((s) => `<li><svg width="12" height="12" aria-hidden="true"><rect width="12" height="12" rx="3" fill="${s.color}"/></svg>${s.label}</li>`).join('')}</ul></div>
+    <p class="small muted m0">Last ${data.length} finalized batch${data.length === 1 ? '' : 'es'}, by the month the service period ended. Hover a month for the numbers; click it to open the batch.</p>
+    <svg class="bill-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Bill history: city utility bill and water and sewer billed to tenants per batch">${grid}${groups}</svg>
+  </section>`;
 }
 
 // --------------------------------------------------------------- create / edit
@@ -206,6 +259,31 @@ export async function runForm(values = {}) {
   });
 }
 
+// --------------------------------------------------------------- checks before finalizing
+
+function checksHtml(checks, { compact = false } = {}) {
+  const warns = checks.filter((c) => c.level === 'warn');
+  const shown = compact ? warns : checks;
+  return `<ul class="checks">${shown.map((c) => `<li class="${c.level}">
+      <span class="chk" aria-hidden="true">${c.level === 'ok' ? '✓' : '!'}</span>
+      <div><b>${esc(c.title)}</b>${c.detail ? `<div class="small muted">${esc(c.detail)}</div>` : ''}
+        ${c.items?.length ? `<div class="small check-items">${c.items.slice(0, 12).map(esc).join(' · ')}${c.items.length > 12 ? ` · and ${c.items.length - 12} more` : ''}</div>` : ''}</div></li>`).join('')}</ul>`;
+}
+
+/** Finalize confirmation that lists anything that looks wrong. Resolves true to finalize. */
+function finalizeBox(count, warns) {
+  return new Promise((resolve) => {
+    const m = modal(`<h2>Finalize ${count} statement${count === 1 ? '' : 's'}?</h2>
+      ${warns.length
+        ? `<div class="notice warn-notice"><b>${warns.length} thing${warns.length === 1 ? '' : 's'} to check first.</b> You can still finalize, but these are often mistakes.</div>${checksHtml(warns)}`
+        : '<div class="notice ok-notice"><b>All checks passed.</b> People, unit details, emails and the bill amount look right.</div>'}
+      <p class="small">Tenants will see the statements in the portal, and you can then email them and export to Rent Manager.</p>
+      <div class="footer"><button data-close>Go back</button><button class="primary" data-ok>${warns.length ? 'Finalize anyway' : 'Finalize'}</button></div>`);
+    m.querySelector('[data-ok]').addEventListener('click', () => { closeModal(); resolve(true); });
+    m.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => resolve(false)));
+  });
+}
+
 // --------------------------------------------------------------- detail
 
 export async function runDetailPage(root, id) {
@@ -231,6 +309,7 @@ export async function runDetailPage(root, id) {
         ${r.status !== 'finalized' ? `<button data-action="calc">${r.status === 'draft' ? 'Calculate' : 'Recalculate'}</button>` : ''}
         ${r.status === 'calculated' ? '<button class="primary" data-action="finalize">Finalize statements</button>' : ''}
         ${r.statements.length ? `<button data-action="pdfAll">${r.status === 'finalized' ? 'Download all PDFs' : 'Preview all PDFs'}</button>` : ''}
+        ${r.statements.length ? `<a class="btn" href="/api/admin/runs/${r.id}/owner-report.pdf" target="_blank" rel="noopener">Owner report (PDF)</a>` : ''}
         ${r.status === 'finalized' ? `<button class="primary" data-action="emailAll">Email statements${unsent.length ? ` (${unsent.length})` : ''}</button>
           <a class="btn" href="/api/admin/export/charges.csv?run_id=${r.id}&mark=1" data-export>Export CSV for Rent Manager</a>
           <button data-action="reopen">Reopen</button>` : ''}
@@ -245,6 +324,7 @@ export async function runDetailPage(root, id) {
     </ol>
     ${r.status === 'calculated' ? '<div class="notice">Review the statements below. Click a <b>PDF</b> link to preview one. When everything looks right, click <b>Finalize statements</b>. Finalized statements can be emailed and exported, and tenants can see them in the portal. If you change tenants, units or split rules, click <b>Recalculate</b> first.</div>' : ''}
     ${r.status === 'draft' ? '<div class="notice">This batch has not been calculated yet. Click <b>Calculate</b>.</div>' : ''}
+    ${r.status === 'calculated' ? '<div data-checks class="checks-panel"><div class="muted small">Checking the batch…</div></div>' : ''}
     ${s ? `<div class="grid cards mb">
       <div class="card stat"><div class="label">Utility bill total</div><div class="value">${money(s.city_total_cents)}</div>
         ${s.discount_cents ? `<div class="muted small">Split after the owner discount: ${money(s.city_total_cents - s.discount_cents)}</div>` : ''}</div>
@@ -301,13 +381,23 @@ export async function runDetailPage(root, id) {
     })}`;
   root.replaceChildren(div);
   const reload = () => runDetailPage(root, id);
+  const checksEl = div.querySelector('[data-checks]');
+  if (checksEl) {
+    api(`/admin/runs/${id}/checks`).then((checks) => {
+      const warns = checks.filter((c) => c.level === 'warn');
+      checksEl.innerHTML = `<div class="checks-head"><b>Checks before finalizing</b>
+          <span class="badge ${warns.length ? 'draft' : 'posted'}">${warns.length ? `${warns.length} to review` : 'all good'}</span></div>${checksHtml(checks)}`;
+    }).catch((e) => { checksEl.innerHTML = `<div class="small muted">Couldn't run the checks: ${esc(e.message)}</div>`; });
+  }
   // The CSV downloads in place; refresh afterwards so the "Exported" step updates.
   div.querySelector('[data-export]')?.addEventListener('click', () => setTimeout(reload, 1500));
   onActions(div, {
     edit: () => runForm(r),
     calc: async () => { await api(`/admin/runs/${id}/calculate`, { method: 'POST' }); toast('Statements calculated'); reload(); },
     finalize: async () => {
-      if (!(await confirmBox(`Finalize ${r.statements.length} statements? Tenants will see them in the portal, and you can then email them and export to Rent Manager.`, 'Finalize'))) return;
+      const checks = await api(`/admin/runs/${id}/checks`);
+      const warns = checks.filter((c) => c.level === 'warn');
+      if (!(await finalizeBox(r.statements.length, warns))) return;
       await api(`/admin/runs/${id}/finalize`, { method: 'POST' }); toast('Statements finalized'); reload();
     },
     reopen: async () => {

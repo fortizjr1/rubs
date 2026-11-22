@@ -34,6 +34,9 @@ async function boot() {
   altchaOn = Boolean(status.altcha);
   minPw = status.min_password_length || 8;
   if (status.needsSetup) return setupScreen();
+  // A "Forgot password" email link: #reset=<token>
+  const reset = /^#reset=([a-f0-9]{64})$/.exec(location.hash);
+  if (reset) return resetScreen(reset[1]);
   if (!status.user) return loginScreen(location.hash === '#staff' ? 'staff' : 'resident');
   const user = { ...status.user, company_name: company, payment_url: status.payment_url || '' };
   if (user.type === 'admin') return startAdmin(app, user, logout);
@@ -156,6 +159,7 @@ const passwordsMatch = (d) => (d.password !== d.password2 ? 'The two passwords d
 
 function loginScreen(mode = 'resident') {
   if (mode === 'activate') return activateScreen();
+  if (mode === 'forgot') return forgotScreen();
   const staff = mode === 'staff';
   const box = render(staff ? STAFF_BRAND : RESIDENT_BRAND, `
     <div class="segmented" role="tablist">
@@ -174,7 +178,7 @@ function loginScreen(mode = 'resident') {
     ${staff
       ? '<p class="login-note">Need access? An administrator can add you in Settings → Staff accounts.</p>'
       : `<div class="login-cta"><span>First time here?</span> <button type="button" class="link" data-mode="activate">Activate your account →</button></div>
-         <p class="login-note">Forgot your password? Contact your leasing office. They can reset your access so you can activate again.</p>`}`);
+         <p class="login-note">Forgot your password? <button type="button" class="link inline" data-mode="forgot">Reset it by email</button></p>`}`);
   box.querySelectorAll('[data-mode]').forEach((b) => b.addEventListener('click', () => {
     history.replaceState(null, '', b.dataset.mode === 'staff' ? '#staff' : location.pathname);
     loginScreen(b.dataset.mode);
@@ -214,6 +218,58 @@ function activateScreen() {
     if ((d.password || '').length < minPw) return `Your password must be at least ${minPw} characters.`;
     return passwordsMatch(d);
   });
+}
+
+// Tenant asks for a password reset link by email.
+function forgotScreen() {
+  const box = render(RESIDENT_BRAND, `
+    <button type="button" class="link back" data-back>← Back to sign in</button>
+    <h2>Reset your password</h2>
+    <p class="muted">Enter the email address the office has on file for you. We'll email you a link to choose a new password.</p>
+    <div class="error" hidden role="alert"></div>
+    <div class="notice ok-notice" hidden data-sent role="status"></div>
+    <form novalidate>
+      <div class="field"><label for="f_email">Email on file</label><input id="f_email" name="email" type="email" required autocomplete="email" placeholder="you@example.com"></div>
+      ${altchaWidget()}
+      <button class="primary block" type="submit">Email me a reset link</button>
+    </form>
+    <p class="login-note">Never set up a portal account? Go back and choose <b>Activate your account</b>.</p>`);
+  box.querySelector('[data-back]').addEventListener('click', () => loginScreen('resident'));
+  bindForm(box, async (d) => {
+    const r = await api('/auth/forgot', { method: 'POST', body: { email: d.email, altcha: d.altcha } });
+    const sent = box.querySelector('[data-sent]');
+    sent.textContent = r.message;
+    sent.hidden = false;
+    box.querySelector('form').hidden = true;
+  }, (d) => (!d.email ? 'Enter your email address.' : null));
+}
+
+// Opened from the email link: choose a new password.
+async function resetScreen(token) {
+  const box = render(RESIDENT_BRAND, `
+    <h2>Choose a new password</h2>
+    <div class="error" hidden role="alert"></div>
+    <form novalidate>
+      ${passwordField({ label: 'New password', autocomplete: 'new-password', minlength: minPw, help: `At least ${minPw} characters.` })}
+      ${passwordField({ name: 'password2', label: 'Confirm new password', autocomplete: 'new-password', minlength: minPw })}
+      <button class="primary block" type="submit">Save new password</button>
+    </form>
+    <p class="login-note"><button type="button" class="link inline" data-forgot>Request a new link</button> · <button type="button" class="link inline" data-signin>Back to sign in</button></p>`);
+  const leave = (mode) => { history.replaceState(null, '', location.pathname); loginScreen(mode); };
+  box.querySelector('[data-forgot]').addEventListener('click', () => leave('forgot'));
+  box.querySelector('[data-signin]').addEventListener('click', () => leave('resident'));
+  try { await api('/auth/reset-check', { method: 'POST', body: { token } }); } catch (e) {
+    const err = box.querySelector('.error');
+    err.textContent = e.message; err.hidden = false;
+    box.querySelector('form').hidden = true;
+    return;
+  }
+  bindForm(box, async (d) => {
+    await api('/auth/reset', { method: 'POST', body: { token, password: d.password } });
+    history.replaceState(null, '', location.pathname);
+    toast('Your password was changed. Welcome back!');
+    boot();
+  }, (d) => ((d.password || '').length < minPw ? `Your password must be at least ${minPw} characters.` : passwordsMatch(d)));
 }
 
 function setupScreen() {

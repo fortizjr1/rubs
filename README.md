@@ -196,6 +196,17 @@ migrations/        Database schema (D1)
 tests/             Calculation tests
 ```
 
+## Reports, checks and logs
+
+- **Checks before Finalize**: a batch's page lists anything that looks wrong (tenants with 0 people, units missing square
+  feet/bedrooms, no email, final bills without a forwarding address, $0 statements, a bill more than 30% higher or lower per
+  day than the previous batch). Finalize shows them again and lets you go back or finalize anyway.
+- **Owner report (PDF)** on each batch: city bill, owner discount, paid by tenants, recovery rate, owner cost (vacant units,
+  common area, discount), fixed charges, total billed, and the year-to-date totals. No tenant details.
+- **Bill history chart** on each property's Billing tab: city bill vs. water & sewer billed to tenants for the last 12 batches.
+- **Staff activity log** (Settings → Activity log): every change staff make, with who, when and IP. Kept for a year.
+- **Forgot password** (tenants): a single-use link emailed through your SMTP settings, valid 60 minutes.
+
 ## Security
 
 **Settings → Security** lists what protects the app and lets you change:

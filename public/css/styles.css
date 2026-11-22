@@ -455,3 +455,7 @@ dl.kv dd { overflow-wrap: anywhere; }
 .stmt-lines li.stmt-total-row.first, .stmt-lines li.stmt-total-row.grand { border-top: 1px solid var(--line); }
 .stmt-lines li.stmt-total-row.grand { font-weight: 700; padding-top: .45rem; }
 .stmt-lines li.discount-text { display: flex; color: var(--ok); }
+
+/* date fields: keep iOS Safari's date input inside its box */
+input[type=date] { -webkit-appearance: none; appearance: none; min-width: 0; display: block; min-height: 2.65rem; text-align: left; }
+input[type=date]::-webkit-date-and-time-value { text-align: left; }

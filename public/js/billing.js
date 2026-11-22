@@ -76,6 +76,8 @@ export async function runForm(values = {}) {
         ${props.map((p) => `<option value="${p.id}" ${String(p.id) === String(values.property_id) ? 'selected' : ''}>${esc(propertyLabel(p))}</option>`).join('')}</select></div>
       <div class="field"><label>Utility company</label><input name="vendor" value="${esc(values.vendor || '')}" placeholder="City of Tallahassee"></div>
       <div class="field"><label>Utility account #</label><input name="vendor_account" value="${esc(values.vendor_account || '')}"></div>
+      <div class="field"><label>Bill date (received from the city)</label><input type="date" name="bill_date" value="${esc(values.bill_date || '')}">
+        <div class="help">For your records only. Not shown on statements.</div></div>
       <div class="field"><label>Service period start *</label><input type="date" name="period_start" required value="${esc(values.period_start || '')}"></div>
       <div class="field"><label>Service period end *</label><input type="date" name="period_end" required value="${esc(values.period_end || '')}"></div>
       <h3 class="full form-heading">Charges for this batch</h3>
@@ -94,14 +96,13 @@ export async function runForm(values = {}) {
         </div>
         <p class="small m0" data-discount-preview></p>
         <p class="small muted m0" data-discount-only>Taken off the utility bill before it is split, so every resident's utility charge is lower.
-          Fixed charges are not discounted. Statements show "Discount applied" with the amount saved, but never the reason.</p>
+          Fixed charges are not discounted. Statements show the charges, then Total, Discounts and Grand total, but never the reason.</p>
       </div>
       <h3 class="full form-heading">Statement dates</h3>
-      <div class="field"><label>Statement date</label><input type="date" name="statement_date" value="${esc(values.statement_date || new Date().toISOString().slice(0, 10))}"></div>
+      <div class="field"><label>Statement date</label><input type="date" name="statement_date" value="${esc(values.statement_date || new Date().toISOString().slice(0, 10))}">
+        <div class="help">Also used as the charge date in the Rent Manager export.</div></div>
       <div class="field"><label>Due date</label><input type="date" name="due_date" value="${esc(values.due_date || '')}">
         <div class="help" data-due-help></div></div>
-      <div class="field"><label>Charge date (Rent Manager)</label><input type="date" name="charge_date" value="${esc(values.charge_date || '')}">
-        <div class="help">Leave blank to use the statement date.</div></div>
       <div class="field full"><label>Notes</label><textarea name="notes" rows="2">${esc(values.notes || '')}</textarea></div>
       <div class="footer full"><button type="button" data-close>Cancel</button>
         <button class="primary" type="submit">${editing ? 'Save & recalculate' : 'Save & calculate'}</button></div>
@@ -220,7 +221,7 @@ export async function runDetailPage(root, id) {
   const div = document.createElement('div');
   div.innerHTML = `<div class="topbar"><div><a href="#/billing" class="small">← Billing</a>
       <h1>${esc(r.property_name)} — ${esc(r.utilities || 'Utility bill')} ${statusBadge(r.status)}</h1>
-      <div class="muted small">Service ${date(r.period_start)} – ${date(r.period_end)} (${r.period_days} days)${r.vendor ? ` · ${esc(r.vendor)}` : ''}${r.vendor_account ? ` #${esc(r.vendor_account)}` : ''}
+      <div class="muted small">Service ${date(r.period_start)} – ${date(r.period_end)} (${r.period_days} days)${r.vendor ? ` · ${esc(r.vendor)}` : ''}${r.vendor_account ? ` #${esc(r.vendor_account)}` : ''}${r.bill_date ? ` · Bill received ${date(r.bill_date)}` : ''}
         · Statement ${date(r.statement_date)} · Due ${date(r.due_date)}</div></div>
       <div class="row">
         ${r.status !== 'finalized' ? '<button data-action="edit">Edit bill</button>' : ''}

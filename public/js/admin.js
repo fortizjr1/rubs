@@ -206,6 +206,8 @@ async function propertiesPage() {
         { label: 'Occupied', value: 'occupied_units', cls: 'num' },
         { label: 'Vacant', value: 'vacant_units', cls: 'num' },
         { label: 'Occupancy', value: (p) => occupancy(p), cls: 'num' },
+        { label: 'Last batch billed to tenants', value: lastBatchCell, cls: 'num' },
+        { label: 'Billed to tenants this year', value: (p) => `${money(p.ytd_billed_cents || 0)}<div class="small muted">${new Date().getFullYear()}</div>`, cls: 'num' },
       ],
       rows: props,
       pageKey: 'properties',
@@ -230,6 +232,11 @@ async function propertiesPage() {
     },
   });
 }
+
+// Total of the property's newest finalized billing batch, with its service period linking to the batch.
+const lastBatchCell = (p) => (p.last_run_id
+  ? `${money(p.last_billed_cents)}<div class="small"><a href="#/billing/${p.last_run_id}">${date(p.last_run_start)} – ${date(p.last_run_end)}</a></div>`
+  : '<span class="muted">—</span><div class="small muted">No finalized batch yet</div>');
 
 const occupancy = (p) => (p.units_total ? `${Math.round((p.occupied_units / p.units_total) * 1000) / 10}%` : '—');
 
@@ -287,6 +294,10 @@ async function propertyDetail(id, tab) {
         <div class="muted small">${p.current_tenants} current tenant${p.current_tenants === 1 ? '' : 's'}</div></div>
       <div class="card stat"><div class="label">Vacant</div><div class="value">${p.vacant_units}</div></div>
       <div class="card stat"><div class="label">Occupancy</div><div class="value">${occupancy(p)}</div></div>
+      <div class="card stat"><div class="label">Last batch billed to tenants</div><div class="value">${p.last_run_id ? money(p.last_billed_cents) : '—'}</div>
+        <div class="muted small">${p.last_run_id ? `<a href="#/billing/${p.last_run_id}">${date(p.last_run_start)} – ${date(p.last_run_end)}</a>` : 'No finalized batch yet'}</div></div>
+      <div class="card stat"><div class="label">Billed to tenants this year</div><div class="value">${money(p.ytd_billed_cents || 0)}</div>
+        <div class="muted small">Jan 1 – Dec 31, ${new Date().getFullYear()}</div></div>
     </div>
     ${unitsWarning(p) ? `<div class="notice small">${esc(unitsWarning(p))}</div>` : ''}
     <div class="tabs">${tabs.map(([k, l]) => `<a href="#/properties/${id}/${k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}</div>

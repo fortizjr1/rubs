@@ -50,7 +50,20 @@ const RESOURCES = {
                   AND (t.move_out IS NULL OR t.move_out >= date('now'))) AS occupied_units,
              (SELECT COUNT(*) FROM tenants t JOIN units u ON u.id = t.unit_id
                 WHERE u.property_id = p.id AND t.move_in <= date('now')
-                  AND (t.move_out IS NULL OR t.move_out >= date('now'))) AS current_tenants
+                  AND (t.move_out IS NULL OR t.move_out >= date('now'))) AS current_tenants,
+             -- Billing totals (finalized batches only): the newest batch, and this calendar year (service period ending Jan 1 - Dec 31).
+             (SELECT r.id FROM billing_runs r WHERE r.property_id = p.id AND r.status = 'finalized'
+                ORDER BY r.period_end DESC, r.id DESC LIMIT 1) AS last_run_id,
+             (SELECT r.period_start FROM billing_runs r WHERE r.property_id = p.id AND r.status = 'finalized'
+                ORDER BY r.period_end DESC, r.id DESC LIMIT 1) AS last_run_start,
+             (SELECT r.period_end FROM billing_runs r WHERE r.property_id = p.id AND r.status = 'finalized'
+                ORDER BY r.period_end DESC, r.id DESC LIMIT 1) AS last_run_end,
+             (SELECT COALESCE(SUM(s.total_cents), 0) FROM statements s WHERE s.billing_run_id =
+                (SELECT r.id FROM billing_runs r WHERE r.property_id = p.id AND r.status = 'finalized'
+                  ORDER BY r.period_end DESC, r.id DESC LIMIT 1)) AS last_billed_cents,
+             (SELECT COALESCE(SUM(s.total_cents), 0) FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id
+                WHERE r.property_id = p.id AND r.status = 'finalized'
+                  AND strftime('%Y', r.period_end) = strftime('%Y', 'now')) AS ytd_billed_cents
            FROM properties p) x WHERE 1=1`,
     filters: { id: 'x.id', active: 'x.active' },
     search: ['x.name', 'x.address', 'x.rm_property_code'],

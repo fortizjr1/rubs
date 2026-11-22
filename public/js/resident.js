@@ -1,5 +1,5 @@
-// Resident portal: latest amount due, statements with PDFs and "how was this calculated",
-// account and unit details. Also used for the read-only staff preview ("Log in as a resident").
+// Tenant portal: latest amount due, statements with PDFs and "how was this calculated",
+// account and unit details. Also used for the read-only staff preview ("Log in as a tenant").
 import { api, esc, money, date, fullName, toast, formModal, onActions, ICONS, initials } from './ui.js';
 import { lineGross, discountCents, statementTotals } from './shared/statement-pdf.js';
 
@@ -12,7 +12,7 @@ function howCalculated(st) {
       ? `, prorated for the ${c.days} of ${c.period_days} days you lived there → ${money(c.share_cents)}` : ''}.${c.tax_cents ? ` Tax: ${money(c.tax_cents)}.` : ''}</div>`
     : `<div class="how-item"><b>${esc(c.utility_name)}</b>: the property's bill was ${money(c.bill_total_cents)}.
     ${c.detail?.discount_cents != null && c.bill_discount_cents ? `It was reduced by a ${money(c.bill_discount_cents)} discount before it was split, so ${money(c.bill_total_cents - c.bill_discount_cents)} was shared. Your discount: ${money(c.detail.discount_cents)}.` : ''}
-    ${c.detail ? `${c.detail.recovery_pct}% of it is shared by residents.` : ''} You were billed for ${c.days} of ${c.period_days} days.
+    ${c.detail ? `${c.detail.recovery_pct}% of it is shared by tenants.` : ''} You were billed for ${c.days} of ${c.period_days} days.
     ${(c.detail?.bases || []).map((d) => `${d.weight_pct}% is split by ${BASIS[d.basis]}: your factor ${d.factor} × ${d.days} days = ${d.ratio_pct}% of that part → ${money(d.share_cents)}.`).join(' ')}
     ${c.tax_cents ? `Tax: ${money(c.tax_cents)}.` : ''}</div>`)).join('');
 }
@@ -56,7 +56,7 @@ export async function startResident(app, user, logout, stopPreview) {
     <header class="portal-head">
       <div class="portal-head-inner">
         <div class="portal-brand"><span class="logo-mark">${ICONS.drop}</span>
-          <div><div class="portal-prop">${esc(me.property_name)}</div><div class="portal-sub">Resident portal · Unit ${esc(me.unit_number)}</div></div></div>
+          <div><div class="portal-prop">${esc(me.property_name)}</div><div class="portal-sub">Tenant portal · Unit ${esc(me.unit_number)}</div></div></div>
         <div class="portal-user">
           <span class="avatar">${esc(initials(fullName(me)))}</span>
           <div class="portal-user-name">${esc(fullName(me))}<div class="portal-sub">Account #${esc(me.account_number || '—')}</div></div>
@@ -81,7 +81,7 @@ export async function startResident(app, user, logout, stopPreview) {
             <div class="due-meta">Your utility statements will appear here once the office posts them.</div></div>
           ${payUrl ? `<div class="due-actions">${payButton('pay')}</div>` : ''}`}
         <p class="due-disclaimer">This shows what was billed to you for utilities, not your current balance. Charges are posted to your
-          resident account in Rent Manager. ${payUrl ? 'Use <b>Pay online</b> to sign in to the Rent Manager resident portal, check your balance and make a payment, or contact the office.' : 'Check your balance and make payments there, or contact the office.'}</p>
+          tenant account in Rent Manager. ${payUrl ? 'Use <b>Pay online</b> to sign in to the Rent Manager tenant portal, check your balance and make a payment, or contact the office.' : 'Check your balance and make payments there, or contact the office.'}</p>
       </section>
 
       <div class="portal-grid">
@@ -110,7 +110,7 @@ export async function startResident(app, user, logout, stopPreview) {
             ${me.move_out ? `<dt>Move-out</dt><dd>${date(me.move_out)}</dd>` : ''}</dl>
             <p class="muted small m0">These details are used to calculate your share. If something is wrong, contact the office.</p></div>
           ${payUrl ? `<div class="card side-card pay-card"><h3>${ICONS.card}<span>Make a payment</span></h3>
-            <p class="small">Pay your utility charges with your rent through the Rent Manager resident portal (opens in a new tab).</p>
+            <p class="small">Pay your utility charges with your rent through the Rent Manager tenant portal (opens in a new tab).</p>
             ${payButton('primary block')}</div>` : ''}
           <div class="card side-card help-card"><h3>Questions?</h3>
             <p class="small m0">${office.length ? `Contact the office: ${office.map(esc).join(' · ')}.` : 'Contact your leasing office.'}

@@ -38,7 +38,7 @@ export function describeAllocation(u) {
 
 export function describeRule(u) {
   const tax = Number(u.tax_pct) ? ` · +${pct(u.tax_pct)} tax` : '';
-  if (u.charge_method === 'flat') return `Fixed ${money(u.flat_amount_cents)} per resident${Number(u.flat_prorate) ? ', prorated by days' : ''}${tax}`;
+  if (u.charge_method === 'flat') return `Fixed ${money(u.flat_amount_cents)} per tenant${Number(u.flat_prorate) ? ', prorated by days' : ''}${tax}`;
   return `${pct(u.recovery_pct ?? 100)} tenant contribution · ${describeAllocation(u)}${tax}`;
 }
 
@@ -63,7 +63,7 @@ export function rubsTemplateModal({ title, values = {}, save, utilityId }) {
           <h3>Template basics</h3>
           <div class="field"><label>Utility *</label><input name="utility_name" required value="${esc(v.utility_name || '')}" placeholder="Water, Sewer, Water/Sewer…"></div>
           <div class="field"><label>Tenant contribution *</label><div class="suffix"><input name="recovery_pct" type="number" min="0" max="100" step="0.01" value="${esc(v.recovery_pct)}"><span>%</span></div>
-            <div class="help">Share of the bill passed to residents. The rest is paid by the owner.</div></div>
+            <div class="help">Share of the bill passed to tenants. The rest is paid by the owner.</div></div>
           <div class="field"><label>Show on statement as</label><input name="statement_label" value="${esc(v.statement_label || '')}" placeholder="e.g. Water & Sewer">
             <div class="help">Charges with the same name are combined into one statement line.</div></div>
           <div class="form-grid">
@@ -75,7 +75,7 @@ export function rubsTemplateModal({ title, values = {}, save, utilityId }) {
         </section>
         <section class="card flat-card">
           <h3>Allocation</h3>
-          <p class="small muted">How the residents' share of the bill is divided.</p>
+          <p class="small muted">How the tenants' share of the bill is divided.</p>
           ${radio('even_all', 'Divide utility costs evenly across all units')}
           ${radio('even_occupied', 'Divide utility costs evenly across occupied units only')}
           ${radio('factors', 'Choose allocation factors')}
@@ -95,7 +95,7 @@ export function rubsTemplateModal({ title, values = {}, save, utilityId }) {
             }).join('')}
             <div class="factor-total" data-total></div>
             <p class="small muted m0">"All units" keeps vacant units in the calculation, so the owner pays their share.
-              "Occupied units only" splits that part among residents.</p>
+              "Occupied units only" splits that part among tenants.</p>
           </div>
         </section>
       </div>
@@ -185,14 +185,14 @@ function lastFullMonth() {
 }
 
 /**
- * Test Calculation: runs the rule on a sample bill with the property's current units and residents.
+ * Test Calculation: runs the rule on a sample bill with the property's current units and tenants.
  * opts.config tests unsaved form values; opts.back reopens the form afterwards.
  */
 export function testCalculationModal(u, opts = {}) {
   const flat = u.charge_method === 'flat';
   const [ds, de] = lastFullMonth();
   const m = modal(`<h2>Test calculation · ${esc(u.utility_name)}</h2>
-    <p class="small muted">${esc(describeRule(u))}. Uses the property's current units and residents. Nothing is saved or billed.</p>
+    <p class="small muted">${esc(describeRule(u))}. Uses the property's current units and tenants. Nothing is saved or billed.</p>
     <form class="row test-form" novalidate>
       ${flat ? '' : `<div class="field"><label>Sample bill amount ($)</label><input type="number" name="amount" min="0" step="0.01" placeholder="e.g. 1234.56" required></div>`}
       <div class="field"><label>Service period start</label><input type="date" name="start" value="${ds}"></div>
@@ -218,15 +218,15 @@ export function testCalculationModal(u, opts = {}) {
       m.querySelector('[data-result]').innerHTML = `
         ${flat ? '' : `<div class="grid cards test-cards">
           <div class="card stat"><div class="label">Bill</div><div class="value">${money(s.total_cents)}</div></div>
-          <div class="card stat"><div class="label">Residents pay</div><div class="value">${money(s.resident_share_cents)}</div>
-            <div class="muted small">${s.resident_count} residents · ${s.period_days} days</div></div>
+          <div class="card stat"><div class="label">Tenants pay</div><div class="value">${money(s.resident_share_cents)}</div>
+            <div class="muted small">${s.resident_count} tenants · ${s.period_days} days</div></div>
           <div class="card stat"><div class="label">Vacant units (owner)</div><div class="value">${money(s.vacancy_cents)}</div></div>
           <div class="card stat"><div class="label">Not contributed (owner)</div><div class="value">${money(s.common_area_cents)}</div>
             <div class="muted small">${pct(s.recovery_pct)} tenant contribution</div></div></div>`}
         ${table({
           columns: [
             { label: 'Unit', value: 'unit_number' },
-            { label: 'Resident', value: 'resident' },
+            { label: 'Tenant', value: 'tenant' },
             { label: 'Days', value: (l) => `${l.days}/${l.period_days}`, cls: 'num' },
             { label: 'People', value: 'occupants', cls: 'num' },
             { label: 'Sq ft', value: (l) => Number(l.sqft).toLocaleString(), cls: 'num' },
@@ -236,8 +236,8 @@ export function testCalculationModal(u, opts = {}) {
             ...(hasTax ? [{ label: 'Tax', value: (l) => money(l.tax_cents), cls: 'num' }] : []),
           ],
           rows: r.lines,
-          empty: 'No residents lived at the property during this period.',
-          footer: r.lines.length ? `<tr><td colspan="7">Total (${r.lines.length} residents)</td><td class="num">${money(r.lines.reduce((t, l) => t + l.share_cents, 0))}</td>${hasTax ? `<td class="num">${money(r.lines.reduce((t, l) => t + l.tax_cents, 0))}</td>` : ''}</tr>` : '',
+          empty: 'No tenants lived at the property during this period.',
+          footer: r.lines.length ? `<tr><td colspan="7">Total (${r.lines.length} tenants)</td><td class="num">${money(r.lines.reduce((t, l) => t + l.share_cents, 0))}</td>${hasTax ? `<td class="num">${money(r.lines.reduce((t, l) => t + l.tax_cents, 0))}</td>` : ''}</tr>` : '',
         })}
         ${r.vacant_units.length ? `<p class="small muted">Vacant for the whole period: ${r.vacant_units.map(esc).join(', ')}</p>` : ''}
         <p class="small muted">To compare with Rent Manager, run its Test Calculation with the same amount and dates.</p>`;

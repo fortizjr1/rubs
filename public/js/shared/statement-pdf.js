@@ -1,4 +1,4 @@
-// Resident utility statement layout (letter size), modeled on the property's sample statement.
+// Tenant utility statement layout (letter size), modeled on the property's sample statement.
 import { PdfDocument, wrapText } from './pdf.js';
 
 const NAVY = '#0c4a6e';
@@ -21,15 +21,15 @@ export function longDate(iso) {
 export const usd = (cents) => '$' + (Math.round(cents) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export const DEFAULT_TEXT = {
-  payment: 'This charge has been posted to your resident account. Pay it with your rent through the resident portal, or at the office at {address}. Please do not send payment to the utility company.',
+  payment: 'This charge has been posted to your tenant account. Pay it with your rent through the tenant portal, or at the office at {address}. Please do not send payment to the utility company.',
   questions: 'Call the office at {phone} or email {email}. Please report any change in the number of occupants in your apartment.',
-  footer: 'Utilities are allocated to residents under the ratio utility billing method set out in your lease. This is not a bill from the utility company.',
+  footer: 'Utilities are allocated to tenants under the ratio utility billing method set out in your lease. This is not a bill from the utility company.',
 };
 
 // Default payment text: only mentions the office address when the property has one.
 function defaultPayment(p) {
   const where = p.address ? `, or at the office at ${p.address}` : ', or at the leasing office';
-  return `This charge has been posted to your resident account. Pay it with your rent through the resident portal${where}. Please do not send payment to the utility company.`;
+  return `This charge has been posted to your tenant account. Pay it with your rent through the tenant portal${where}. Please do not send payment to the utility company.`;
 }
 
 // Default "Questions?" text that only mentions the contact details the property actually has.
@@ -42,7 +42,7 @@ function defaultQuestions(p) {
 }
 
 /**
- * Owner discount, as residents see it: lines carry discount_cents / original_cents when the
+ * Owner discount, as tenants see it: lines carry discount_cents / original_cents when the
  * utility bill was lowered before it was split. The reason is never included.
  */
 export const discountCents = (lines) => (lines || []).reduce((s, l) => s + (l.discount_cents > 0 ? l.discount_cents : 0), 0);

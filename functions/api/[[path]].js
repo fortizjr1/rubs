@@ -40,7 +40,7 @@ const RESOURCES = {
       if (r.billing_fee_cents != null && r.billing_fee_cents < 0) throw new HttpError(400, 'Billing fee cannot be negative');
     },
     // units_total: the number entered on the property, or the units set up if none was entered.
-    // occupied_units: units with at least one current resident today. vacant_units = total - occupied.
+    // occupied_units: units with at least one current tenant today. vacant_units = total - occupied.
     list: `SELECT x.*, COALESCE(x.total_units, x.unit_count) AS units_total,
              MAX(COALESCE(x.total_units, x.unit_count) - x.occupied_units, 0) AS vacant_units
            FROM (SELECT p.*,
@@ -127,7 +127,7 @@ const RESOURCES = {
     order: 'p.name, pu.sort_order, pu.id',
     validate: (r) => {
       if (r.tax_pct != null && (r.tax_pct < 0 || r.tax_pct > 100)) throw new HttpError(400, 'Tax % must be between 0 and 100');
-      if (r.charge_method === 'flat' && !(r.flat_amount_cents > 0)) throw new HttpError(400, 'Enter the fixed amount charged to each resident');
+      if (r.charge_method === 'flat' && !(r.flat_amount_cents > 0)) throw new HttpError(400, 'Enter the fixed amount charged to each tenant');
       if (r.charge_method !== 'flat' && r.allocation_mode === 'factors') {
         // Like Rent Manager: the active allocation factors must add up to 100%.
         const total = ['w_occupants', 'w_sqft', 'w_bedrooms', 'w_bathrooms'].reduce((t, k) => t + (Number(r[k]) || 0), 0);
@@ -293,10 +293,10 @@ const TENANT_COLUMNS = [
     example: '100B', help: "Units that don't exist yet are created automatically (unless you untick that option)." },
   { key: 'first_name', name: 'First Name', required: false, aliases: ['first name', 'first_name', 'firstname', 'first'], example: 'Paul' },
   { key: 'last_name', name: 'Last Name', required: 'Yes, unless you use a Name column', aliases: ['last name', 'last_name', 'lastname', 'last'], example: 'Ianazzo' },
-  { key: 'full_name', name: 'Name', required: 'Instead of First Name + Last Name', aliases: ['name', 'tenant name', 'tenant', 'full name', 'resident', 'resident name'],
+  { key: 'full_name', name: 'Name', required: 'Instead of First Name + Last Name', aliases: ['name', 'tenant name', 'tenant', 'full name', 'resident', 'tenant name'],
     example: 'Ianazzo, Paul  or  Paul Ianazzo', help: 'Used only when there is no Last Name column.' },
   { key: 'email', name: 'Email', required: false, aliases: ['email', 'email address', 'e-mail'], example: 'paul@example.com',
-    help: 'Needed to email statements and for the resident portal.' },
+    help: 'Needed to email statements and for the tenant portal.' },
   { key: 'phone', name: 'Phone', required: false, aliases: ['phone', 'phone number', 'cell', 'mobile', 'telephone'], example: '(850) 555-0123' },
   { key: 'account_number', name: 'Account Number', required: true, aliases: ['account', 'account number', 'account_number', 'account #', 'tenant id', 'tenant_id', 'acct'],
     example: '33580', help: 'Rent Manager tenant account, needed on every row and unique per tenant. Re-importing updates the tenant with the same account number instead of adding a duplicate.' },
@@ -305,7 +305,7 @@ const TENANT_COLUMNS = [
   { key: 'move_in', name: 'Move In', required: true, aliases: ['move in', 'move-in', 'move_in', 'move in date', 'move-in date', 'movein'],
     example: '08/01/2025  or  2025-08-01' },
   { key: 'move_out', name: 'Move Out', required: false, aliases: ['move out', 'move-out', 'move_out', 'move out date', 'move-out date', 'moveout'],
-    example: '07/31/2026', help: 'Leave blank for current residents.' },
+    example: '07/31/2026', help: 'Leave blank for current tenants.' },
   { key: 'occupants', name: 'Occupants', required: false, aliases: ['occupants', 'people', 'number of occupants', 'household size', '# occupants'],
     example: '2', help: 'Number of people in the unit. Defaults to 1.' },
   { key: 'sqft', name: 'Sq Ft', required: false, aliases: ['sqft', 'sq ft', 'square feet', 'square footage', 'sf'], example: '850',
@@ -742,7 +742,7 @@ async function adminDashboard(db) {
       COALESCE((SELECT SUM(c.share_cents + c.admin_fee_cents) FROM charges c JOIN bills b ON b.id = c.bill_id
         JOIN billing_runs r ON r.id = b.billing_run_id JOIN property_utilities pu ON pu.id = b.property_utility_id
         WHERE r.status = 'finalized' AND r.period_end >= date('now','start of year') AND pu.charge_method = 'flat'),0) AS fixed_billed`),
-    db.prepare(`SELECT r.id, r.period_start, r.period_end, r.status, p.name AS property_name,
+    db.prepare(`SELECT r.id, r.period_start, r.period_end, r.status, r.calc_summary, p.name AS property_name,
       (SELECT COALESCE(SUM(total_cents),0) FROM bills b WHERE b.billing_run_id = r.id) AS city_total_cents,
       (SELECT COALESCE(SUM(total_cents),0) FROM statements s WHERE s.billing_run_id = r.id) AS billed_cents,
       (SELECT COUNT(*) FROM statements s WHERE s.billing_run_id = r.id) AS statement_count,
@@ -751,16 +751,17 @@ async function adminDashboard(db) {
          WHERE b.billing_run_id = r.id) AS utilities
       FROM billing_runs r JOIN properties p ON p.id = r.property_id ORDER BY r.created_at DESC LIMIT 8`),
   ]);
-  return { counts: counts.results[0], ytd: ytd.results[0], recent_runs: recent.results };
+  const recentRuns = recent.results.map(({ calc_summary, ...r }) => ({ ...r, summary: calc_summary ? JSON.parse(calc_summary) : null }));
+  return { counts: counts.results[0], ytd: ytd.results[0], recent_runs: recentRuns };
 }
 
-// ---------------------------------------------------------------- resident portal security
+// ---------------------------------------------------------------- tenant portal security
 
 // Checked when an email is unknown (same work as a real password check), so timing reveals nothing.
 const dummyHash = (rounds) => `pbkdf2$${rounds}$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=`;
 const LOCKED_MESSAGE = 'This account is locked. Please contact the office.';
 
-/** Records a resident's sign-in time and IP (Cloudflare passes the visitor's IP in CF-Connecting-IP). */
+/** Records a tenant's sign-in time and IP (Cloudflare passes the visitor's IP in CF-Connecting-IP). */
 async function recordResidentLogin(db, tenantId, request) {
   const ip = clientIp(request);
   await db.prepare("UPDATE tenants SET last_login_at = datetime('now'), last_login_ip = ? WHERE id = ?").bind(ip, tenantId).run();
@@ -855,7 +856,7 @@ async function handle({ request, env }) {
       return json({ ok: true, type: isAdmin ? 'admin' : 'tenant' }, 200, { 'Set-Cookie': sessionCookie(token, hours * 3600) });
     }
     if (action === 'activate' && method === 'POST') {
-      // Resident sets up portal access using their account number + the email on file.
+      // Tenant sets up portal access using their account number + the email on file.
       const b = await body(request);
       const sec = await loadSecurity(db);
       const account = String(b.account_number || '').trim().slice(0, 64);
@@ -871,7 +872,7 @@ async function handle({ request, env }) {
       validatePassword(b.password, sec.min_password_length);
       const t = await db.prepare('SELECT id, password_hash, locked_at FROM tenants WHERE account_number = ? AND email = ? COLLATE NOCASE')
         .bind(account, String(b.email || '').trim()).first();
-      if (!t) await failed('account number and email do not match', 400, 'No resident found with that account number and email. Contact the office.');
+      if (!t) await failed('account number and email do not match', 400, 'No tenant found with that account number and email. Contact the office.');
       if (t.locked_at) await failed('account locked', 403, LOCKED_MESSAGE);
       if (t.password_hash) await failed('already activated', 409, 'This account is already activated. Sign in, or ask the office to reset your access.');
       await recordAttempt(db, request, { kind: 'activate', identifier, success: true });
@@ -882,9 +883,9 @@ async function handle({ request, env }) {
       return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(token, hours * 3600) });
     }
     if (action === 'stop-view-as' && method === 'POST') {
-      // Leave a "log in as a resident" preview and restore the staff member's own session.
+      // Leave a "log in as a tenant" preview and restore the staff member's own session.
       const s = await getSession(db, request);
-      if (!s?.impersonated_by) throw new HttpError(400, 'You are not viewing the portal as a resident');
+      if (!s?.impersonated_by) throw new HttpError(400, 'You are not viewing the portal as a tenant');
       const back = s.return_token
         ? await db.prepare("SELECT token FROM sessions WHERE token = ? AND user_type = 'admin' AND user_id = ? AND expires_at > ?")
           .bind(s.return_token, s.impersonated_by, new Date().toISOString()).first()
@@ -904,9 +905,9 @@ async function handle({ request, env }) {
   const session = await getSession(db, request);
   if (!session) throw new HttpError(401, 'Please sign in');
 
-  // ---- resident portal
+  // ---- tenant portal
   if (seg[0] === 'resident') {
-    if (session.user_type !== 'tenant') throw new HttpError(403, 'Resident access only');
+    if (session.user_type !== 'tenant') throw new HttpError(403, 'Tenant access only');
     const tid = session.user_id;
     if (!session.impersonated_by) {
       const lock = await db.prepare('SELECT locked_at FROM tenants WHERE id = ?').bind(tid).first();
@@ -945,11 +946,11 @@ async function handle({ request, env }) {
       return pdfResponse(s);
     }
     if (session.impersonated_by && method !== 'GET') {
-      throw new HttpError(403, 'Not available in the staff preview. Residents make this change themselves.');
+      throw new HttpError(403, 'Not available in the staff preview. Tenants make this change themselves.');
     }
     if (seg[1] === 'profile' && method === 'PUT') {
       const b = await body(request);
-      // Email is the login and is managed by the office, so residents can only change their phone.
+      // Email is the login and is managed by the office, so tenants can only change their phone.
       await db.prepare('UPDATE tenants SET phone = ? WHERE id = ?').bind(coerce('text', b.phone, 'Phone'), tid).run();
       return json({ ok: true });
     }
@@ -958,7 +959,7 @@ async function handle({ request, env }) {
       const t = await db.prepare('SELECT password_hash FROM tenants WHERE id = ?').bind(tid).first();
       if (!(await verifyPassword(String(b.current_password || ''), t.password_hash))) throw new HttpError(400, 'Current password is incorrect');
       validatePassword(b.new_password, (await loadSecurity(db)).min_password_length);
-      // A new password signs out the resident's other devices.
+      // A new password signs out the tenant's other devices.
       await db.batch([
         db.prepare('UPDATE tenants SET password_hash = ? WHERE id = ?').bind(await hashPassword(b.new_password, hashIterations(await getPlan(db))), tid),
         db.prepare("DELETE FROM sessions WHERE user_type = 'tenant' AND user_id = ? AND token != ?").bind(tid, session.token),
@@ -998,7 +999,7 @@ async function handle({ request, env }) {
   }
   if (name === 'import-columns' && method === 'GET') return json({ tenants: TENANT_COLUMNS, units: UNIT_COLUMNS });
   if (name === 'tenants' && id && action === 'view-as' && method === 'POST') {
-    // "Log in as a resident": a read-only, 2-hour resident session that remembers this staff session.
+    // "Log in as a tenant": a read-only, 2-hour tenant session that remembers this staff session.
     const t = await db.prepare('SELECT id FROM tenants WHERE id = ?').bind(id).first();
     if (!t) throw new HttpError(404, 'Tenant not found');
     const token = await createSession(db, 'tenant', t.id, { impersonatedBy: session.user_id, returnToken: session.token, hours: 2 });
@@ -1011,7 +1012,7 @@ async function handle({ request, env }) {
       const reason = coerce('text', (await body(request)).reason, 'Reason');
       await db.batch([
         db.prepare("UPDATE tenants SET locked_at = datetime('now'), locked_reason = ? WHERE id = ?").bind(reason, id),
-        // Sign the resident out everywhere (staff previews are left alone).
+        // Sign the tenant out everywhere (staff previews are left alone).
         db.prepare("DELETE FROM sessions WHERE user_type = 'tenant' AND user_id = ? AND impersonated_by IS NULL").bind(id),
       ]);
     } else {
@@ -1063,18 +1064,18 @@ async function handle({ request, env }) {
     if (method === 'POST' && id === 'clear-lockouts') return json(await clearLockouts(db, (await body(request)).identifier || null));
     if (method === 'GET' && id === 'sessions') {
       const r = await db.prepare(`SELECT
-          SUM(user_type = 'admin' AND impersonated_by IS NULL) AS staff, SUM(user_type = 'tenant' AND impersonated_by IS NULL) AS residents
+          SUM(user_type = 'admin' AND impersonated_by IS NULL) AS staff, SUM(user_type = 'tenant' AND impersonated_by IS NULL) AS tenants
         FROM sessions WHERE expires_at > ?`).bind(new Date().toISOString()).first();
-      return json({ staff: r?.staff || 0, residents: r?.residents || 0 });
+      return json({ staff: r?.staff || 0, tenants: r?.tenants || 0 });
     }
     if (method === 'POST' && id === 'sign-out-all') {
-      // Everyone (staff and residents) is signed out, except the person doing it.
+      // Everyone (staff and tenants) is signed out, except the person doing it.
       const who = (await body(request)).who;
-      const sql = who === 'residents' ? "DELETE FROM sessions WHERE user_type = 'tenant'"
+      const sql = who === 'tenants' ? "DELETE FROM sessions WHERE user_type = 'tenant'"
         : who === 'staff' ? "DELETE FROM sessions WHERE user_type = 'admin' AND token != ?"
         : 'DELETE FROM sessions WHERE token != ?';
       const st = db.prepare(sql);
-      const r = await (who === 'residents' ? st : st.bind(session.token)).run();
+      const r = await (who === 'tenants' ? st : st.bind(session.token)).run();
       return json({ signed_out: r.meta?.changes ?? 0 });
     }
   }

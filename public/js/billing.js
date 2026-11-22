@@ -1,5 +1,5 @@
 // Billing batches: enter the utility company's bill, run RUBS for every utility,
-// review one statement per resident, finalize, then download PDFs / email / export.
+// review one statement per tenant, finalize, then download PDFs / email / export.
 import { api, esc, money, date, fullName, toast, modal, closeModal, confirmBox, table, onActions } from './ui.js';
 import { statementsPdf } from './shared/statement-pdf.js';
 import { describeRule } from './rubs-ui.js';
@@ -26,7 +26,10 @@ export function runsTable(runs, showProperty = true) {
       { label: 'Service period', value: (r) => `<a href="#/billing/${r.id}">${date(r.period_start)} – ${date(r.period_end)}</a>` },
       { label: 'Utilities', value: 'utilities' },
       { label: 'Utility bill', value: (r) => money(r.city_total_cents), cls: 'num' },
-      { label: 'Billed to residents', value: (r) => (r.statement_count ? money(r.billed_cents) : '—'), cls: 'num' },
+      // From the batch's last calculation: utilities split from the bill, fixed charges, and the statements' total.
+      { label: 'Utilities billed', value: (r) => (r.statement_count && r.summary ? money(r.summary.rubs_share_cents ?? 0) : '—'), cls: 'num' },
+      { label: 'Fixed charges', value: (r) => (r.statement_count && r.summary ? money(r.summary.fixed_cents ?? 0) : '—'), cls: 'num' },
+      { label: 'Total billed to tenants', value: (r) => (r.statement_count ? `<b>${money(r.billed_cents)}</b>` : '—'), cls: 'num' },
       { label: 'Statements', value: (r) => (r.statement_count ? `${r.statement_count}` : '—'), cls: 'num' },
       { label: 'Emailed', value: (r) => (r.statement_count ? `${r.emailed_count} / ${r.statement_count}` : '—'), cls: 'num' },
       { label: 'Status', value: (r) => statusBadge(r.status) },
@@ -45,7 +48,7 @@ export async function runsView(el, { propertyId, filters = {} }) {
   const div = document.createElement('div');
   div.innerHTML = `<div class="notice small"><b>How billing works:</b> 1) When the bill arrives from the utility company, create a
       <b>billing batch</b> and enter each amount on it (Water, Sewer…). 2) <b>Calculate</b>: the split rules divide each amount among the
-      residents who lived there during the service period, prorated by days. 3) Review the statements and <b>Finalize</b>.
+      tenants who lived there during the service period, prorated by days. 3) Review the statements and <b>Finalize</b>.
       4) <b>Email</b> the PDF statements, download them for printing, and <b>export</b> the charges to Rent Manager.</div>
     <div class="topbar"><form class="row filters" data-filters>
       ${propertyId ? '' : `<select name="property_id"><option value="">All properties</option>
@@ -91,11 +94,11 @@ export async function runForm(values = {}) {
             <option value="amount" ${values.discount_type === 'amount' ? 'selected' : ''}>Dollar amount off the utility bill</option></select></div>
           <div class="field" data-discount-only><label data-discount-label>Amount</label><input type="number" inputmode="decimal" step="0.01" min="0" name="discount_input"
             value="${values.discount_type === 'pct' ? (values.discount_value / 100) : values.discount_type === 'amount' ? (values.discount_value / 100).toFixed(2) : ''}"></div>
-          <div class="field full" data-discount-only><label>Reason (staff only, not shown to residents)</label>
+          <div class="field full" data-discount-only><label>Reason (staff only, not shown to tenants)</label>
             <input name="discount_note" value="${esc(values.discount_note || '')}" placeholder="e.g. Pool leak in October"></div>
         </div>
         <p class="small m0" data-discount-preview></p>
-        <p class="small muted m0" data-discount-only>Taken off the utility bill before it is split, so every resident's utility charge is lower.
+        <p class="small muted m0" data-discount-only>Taken off the utility bill before it is split, so every tenant's utility charge is lower.
           Fixed charges are not discounted. Statements show the charges, then Total, Discounts and Grand total, but never the reason.</p>
       </div>
       <h3 class="full form-heading">Statement dates</h3>
@@ -133,7 +136,7 @@ export async function runForm(values = {}) {
             <td class="small muted">${esc(chargeRule(u))}</td>
             <td class="num inc"><input type="checkbox" data-fixed="${u.id}" ${!editing || existing.has(u.id) ? 'checked' : ''} aria-label="Include ${esc(u.utility_name)}"></td></tr>`).join('')}
           </tbody></table>
-          <p class="small muted m0">These come from the property's <b>Fixed monthly charges</b> and are added to every resident automatically. Untick one only if it shouldn't be on this batch, e.g. it's already billed in another batch for the same period.</p>` : ''}`;
+          <p class="small muted m0">These come from the property's <b>Fixed monthly charges</b> and are added to every tenant automatically. Untick one only if it shouldn't be on this batch, e.g. it's already billed in another batch for the same period.</p>` : ''}`;
     const updateTotal = () => {
       const t = [...linesEl.querySelectorAll('[data-util]')].reduce((s, i) => s + Math.round(Number(i.value || 0) * 100), 0);
       const el = linesEl.querySelector('[data-total]');
@@ -161,7 +164,7 @@ export async function runForm(values = {}) {
     const total = billTotal();
     const d = on ? discountCentsFor(type, form.elements.discount_input.value, total) : 0;
     m.querySelector('[data-discount-preview]').innerHTML = on && total && d
-      ? `Residents' share will be split from <b>${money(total - d)}</b> instead of ${money(total)}. The owner covers <b>${money(d)}</b>.`
+      ? `Tenants' share will be split from <b>${money(total - d)}</b> instead of ${money(total)}. The owner covers <b>${money(d)}</b>.`
       : on && !total ? '<span class="muted">Enter the utility bill amounts above first.</span>' : '';
   }
   form.elements.discount_type.addEventListener('change', updateDiscount);
@@ -240,15 +243,15 @@ export async function runDetailPage(root, id) {
       ${step(4, `Emailed ${emailable.length ? `${emailable.length - unsent.length}/${emailable.length}` : ''}`, r.status === 'finalized' && emailable.length > 0 && !unsent.length, r.status === 'finalized' && unsent.length > 0)}
       ${step(5, `Exported to Rent Manager ${r.statements.length ? `${exported}/${r.statements.length}` : ''}`, r.statements.length > 0 && exported === r.statements.length, r.status === 'finalized' && exported < r.statements.length)}
     </ol>
-    ${r.status === 'calculated' ? '<div class="notice">Review the statements below. Click a <b>PDF</b> link to preview one. When everything looks right, click <b>Finalize statements</b>. Finalized statements can be emailed and exported, and residents can see them in the portal. If you change tenants, units or split rules, click <b>Recalculate</b> first.</div>' : ''}
+    ${r.status === 'calculated' ? '<div class="notice">Review the statements below. Click a <b>PDF</b> link to preview one. When everything looks right, click <b>Finalize statements</b>. Finalized statements can be emailed and exported, and tenants can see them in the portal. If you change tenants, units or split rules, click <b>Recalculate</b> first.</div>' : ''}
     ${r.status === 'draft' ? '<div class="notice">This batch has not been calculated yet. Click <b>Calculate</b>.</div>' : ''}
     ${s ? `<div class="grid cards mb">
       <div class="card stat"><div class="label">Utility bill total</div><div class="value">${money(s.city_total_cents)}</div>
         ${s.discount_cents ? `<div class="muted small">Split after the owner discount: ${money(s.city_total_cents - s.discount_cents)}</div>` : ''}</div>
       ${s.discount_cents ? `<div class="card stat discount-stat"><div class="label">Owner discount</div><div class="value">−${money(s.discount_cents)}</div>
-        <div class="muted small">${esc(discountLabel(s.discount_type, s.discount_value))} off the utility bill · residents save ${money(s.resident_discount_cents || 0)}
+        <div class="muted small">${esc(discountLabel(s.discount_type, s.discount_value))} off the utility bill · tenants save ${money(s.resident_discount_cents || 0)}
         ${r.discount_note ? `<br>Reason (staff only): ${esc(r.discount_note)}` : ''}</div></div>` : ''}
-      <div class="card stat"><div class="label">Billed to residents</div><div class="value">${money(s.billed_cents)}</div>
+      <div class="card stat"><div class="label">Billed to tenants</div><div class="value">${money(s.billed_cents)}</div>
         <div class="muted small">${money((s.rubs_share_cents ?? s.resident_share_cents))} utilities${s.fixed_cents ? ` + ${money(s.fixed_cents)} fixed charges` : ''}${s.tax_cents ? ` + ${money(s.tax_cents)} tax` : ''}${s.fee_cents ? ` + ${money(s.fee_cents)} fees` : ''}</div></div>
       <div class="card stat"><div class="label">Owner cost</div><div class="value">${money(s.owner_cost_cents)}</div>
         <div class="muted small">${money(s.common_area_cents)} common area + ${money(s.vacancy_cents)} vacant units${s.discount_cents ? ` + ${money(s.discount_cents)} owner discount` : ''}</div></div>
@@ -261,17 +264,17 @@ export async function runDetailPage(root, id) {
         { label: 'Utility', value: (b) => `<b>${esc(b.utility_name)}</b><div class="muted small">${esc(b.rm_charge_code || '')}</div>` },
         { label: 'How it is charged', value: (b) => `${esc(chargeRule(b))}${b.statement_label !== b.utility_name ? `<div class="muted small">On statement as "${esc(b.statement_label)}"</div>` : ''}` },
         { label: 'Bill amount', value: (b) => (b.charge_method === 'flat' ? '<span class="muted">fixed</span>' : money(b.total_cents)), cls: 'num' },
-        { label: 'Residents pay', value: (b) => (b.summary ? money(b.summary.resident_share_cents) : '—'), cls: 'num' },
+        { label: 'Tenants pay', value: (b) => (b.summary ? money(b.summary.resident_share_cents) : '—'), cls: 'num' },
         { label: 'Vacant (owner)', value: (b) => (b.summary && b.charge_method !== 'flat' ? money(b.summary.vacancy_cents) : '—'), cls: 'num' },
         { label: 'Common area (owner)', value: (b) => (b.summary && b.charge_method !== 'flat' ? money(b.summary.common_area_cents) : '—'), cls: 'num' },
       ],
       rows: r.bills,
     })}
-    <h2 class="mt">Resident statements</h2>
+    <h2 class="mt">Tenant statements</h2>
     ${table({
       columns: [
         { label: 'Unit', value: 'unit_number' },
-        { label: 'Resident', value: (st) => `${esc(fullName(st))}${st.move_out && st.move_out <= r.period_end ? ` <span class="badge draft" title="Moved out ${date(st.move_out)}">final bill</span>` : ''}<div class="muted small">${esc(st.account_number || 'no account #')}</div>` },
+        { label: 'Tenant', value: (st) => `${esc(fullName(st))}${st.move_out && st.move_out <= r.period_end ? ` <span class="badge draft" title="Moved out ${date(st.move_out)}">final bill</span>` : ''}<div class="muted small">${esc(st.account_number || 'no account #')}</div>` },
         { label: 'Days', value: (st) => (st.days < r.period_days ? `<b>${st.days}</b>/${r.period_days}` : `${st.days}`), cls: 'num' },
         ...utilNames.map((n) => ({ label: n, value: (st) => money(lineAmt(st, (l) => l.kind === 'utility' && l.label === n)), cls: 'num' })),
         ...(hasTax ? [{ label: 'Tax', value: (st) => money(lineAmt(st, (l) => l.kind === 'tax')), cls: 'num' }] : []),
@@ -304,12 +307,12 @@ export async function runDetailPage(root, id) {
     edit: () => runForm(r),
     calc: async () => { await api(`/admin/runs/${id}/calculate`, { method: 'POST' }); toast('Statements calculated'); reload(); },
     finalize: async () => {
-      if (!(await confirmBox(`Finalize ${r.statements.length} statements? Residents will see them in the portal, and you can then email them and export to Rent Manager.`, 'Finalize'))) return;
+      if (!(await confirmBox(`Finalize ${r.statements.length} statements? Tenants will see them in the portal, and you can then email them and export to Rent Manager.`, 'Finalize'))) return;
       await api(`/admin/runs/${id}/finalize`, { method: 'POST' }); toast('Statements finalized'); reload();
     },
     reopen: async () => {
-      const warn = emailable.length - unsent.length ? ` ${emailable.length - unsent.length} statements were already emailed; if you change amounts, residents will need a corrected statement.` : '';
-      if (!(await confirmBox(`Reopen this batch for changes? Residents won't see it until it's finalized again.${warn}`, 'Reopen'))) return;
+      const warn = emailable.length - unsent.length ? ` ${emailable.length - unsent.length} statements were already emailed; if you change amounts, tenants will need a corrected statement.` : '';
+      if (!(await confirmBox(`Reopen this batch for changes? Tenants won't see it until it's finalized again.${warn}`, 'Reopen'))) return;
       await api(`/admin/runs/${id}/reopen`, { method: 'POST' }); toast('Batch reopened'); reload();
     },
     del: () => deleteRunModal(r, emailable.length - unsent.length, exported),
@@ -323,7 +326,7 @@ export async function runDetailPage(root, id) {
   });
 }
 
-// Delete a batch and every resident statement created from it, at any stage.
+// Delete a batch and every tenant statement created from it, at any stage.
 function deleteRunModal(r, emailedCount, exportedCount) {
   const strict = r.status === 'finalized' || emailedCount > 0 || exportedCount > 0;
   const n = r.statements.length;
@@ -332,13 +335,13 @@ function deleteRunModal(r, emailedCount, exportedCount) {
     <p>This permanently deletes:</p>
     <ul>
       <li>the utility bill amounts entered for this batch (${money(r.city_total_cents)})</li>
-      <li><b>${n} resident statement${n === 1 ? '' : 's'}</b>${n ? ` totaling ${money(r.statements.reduce((t, s) => t + s.total_cents, 0))}` : ''}, including their PDFs and RUBS calculation details</li>
-      ${r.status === 'finalized' ? '<li>the statements residents can currently see in the resident portal</li>' : ''}
+      <li><b>${n} tenant statement${n === 1 ? '' : 's'}</b>${n ? ` totaling ${money(r.statements.reduce((t, s) => t + s.total_cents, 0))}` : ''}, including their PDFs and RUBS calculation details</li>
+      ${r.status === 'finalized' ? '<li>the statements tenants can currently see in the tenant portal</li>' : ''}
     </ul>
     <p class="muted small">Tenants, units, properties and split rules are not affected. To fix a mistake you can also use
       ${r.status === 'finalized' ? '<b>Reopen</b>, then <b>Edit bill</b>' : '<b>Edit bill</b>'} instead of deleting.</p>
     ${emailedCount ? `<div class="notice small"><b>${emailedCount} statement${emailedCount === 1 ? ' was' : 's were'} already emailed.</b>
-      Emails can't be recalled. Consider letting those residents know the statement was sent in error.</div>` : ''}
+      Emails can't be recalled. Consider letting those tenants know the statement was sent in error.</div>` : ''}
     ${exportedCount ? `<div class="notice small"><b>${exportedCount} statement${exportedCount === 1 ? ' was' : 's were'} already exported to Rent Manager.</b>
       Deleting here does not remove those charges from Rent Manager. Download the reversal file first. It has the same charges with
       negative amounts, so you can import it into Rent Manager to cancel them.
@@ -383,9 +386,9 @@ async function downloadAllPdfs(r) {
 function emailAllModal(r, after) {
   const withEmail = r.statements.filter((s) => s.email);
   const m = modal(`<h2>Email statements</h2>
-    <p>${withEmail.length} of ${r.statements.length} residents have an email address.
+    <p>${withEmail.length} of ${r.statements.length} tenants have an email address.
       ${withEmail.length < r.statements.length ? `<br><span class="muted small">${r.statements.length - withEmail.length} without email: use "Download all PDFs" to print theirs.</span>` : ''}</p>
-    <label><input type="checkbox" data-resend> Also resend to residents who were already emailed</label>
+    <label><input type="checkbox" data-resend> Also resend to tenants who were already emailed</label>
     <div class="progress" hidden><div class="bar"></div></div>
     <div class="small" data-status></div>
     <div class="log small" data-log></div>
@@ -425,7 +428,7 @@ function emailAllModal(r, after) {
 
 const SETTINGS_FIELDS = [
   ['company_name', 'Management company name', 'text', 'Printed as "Managed by …" on statements.'],
-  ['payment_url', 'Online payment link (Rent Manager TWA)', 'url', 'Shown as a "Pay online" button in the resident portal, e.g. https://walden.twa.rentmanager.com/'],
+  ['payment_url', 'Online payment link (Rent Manager TWA)', 'url', 'Shown as a "Pay online" button in the tenant portal, e.g. https://walden.twa.rentmanager.com/'],
 ];
 const SMTP_FIELDS = [
   ['smtp_host', 'SMTP server', 'text', 'Maileroo: smtp.maileroo.com'],

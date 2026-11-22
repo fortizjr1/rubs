@@ -23,7 +23,7 @@ export function startAdmin(app, user, logout) {
         <div><div class="side-title">Utility Billing</div>${user.company_name ? `<div class="side-sub">${esc(user.company_name)}</div>` : ''}</div></div>
       <div class="side-nav">${NAV.map(([k, l, icon]) => `<a href="#/${k}" data-nav="${k}" title="${l}">${ICONS[icon]}<span>${l}</span></a>`).join('')}</div>
       <div class="side-section">Preview</div>
-      <a href="#" id="viewAs" class="side-link" title="Log in as a resident">${ICONS.eye}<span>Log in as a resident</span></a>
+      <a href="#" id="viewAs" class="side-link" title="Log in as a tenant">${ICONS.eye}<span>Log in as a tenant</span></a>
       <div class="spacer"></div>
       <div class="side-user"><span class="avatar">${esc(initials(user.name || user.email))}</span>
         <div class="side-user-text"><div class="side-user-name">${esc(user.name || 'Staff')}</div><div class="side-user-email">${esc(user.email)}</div></div></div>
@@ -37,7 +37,7 @@ export function startAdmin(app, user, logout) {
   route();
 }
 
-// ---- "Log in as a resident": opens a read-only resident session (staff preview)
+// ---- "Log in as a tenant": opens a read-only tenant session (staff preview)
 async function viewAsResident(tenantId) {
   await api(`/admin/tenants/${tenantId}/view-as`, { method: 'POST' });
   location.hash = '';
@@ -46,9 +46,9 @@ async function viewAsResident(tenantId) {
 
 async function viewAsPicker() {
   const tenants = await api('/admin/tenants?property_active=1');
-  const m = modal(`<h2>Log in as a resident</h2>
-    <p class="small muted">See the resident portal exactly as this resident sees it. It's read-only (no password or phone changes) and you can go back
-      to the staff view at any time. Works even if the resident hasn't activated their portal.</p>
+  const m = modal(`<h2>Log in as a tenant</h2>
+    <p class="small muted">See the tenant portal exactly as this tenant sees it. It's read-only (no password or phone changes) and you can go back
+      to the staff view at any time. Works even if the tenant hasn't activated their portal.</p>
     <input type="search" placeholder="Search name, unit, account or email…" data-q class="mb">
     <div class="picker" data-list></div>
     <div class="footer"><button data-close>Cancel</button></div>`, { wide: true });
@@ -61,7 +61,7 @@ async function viewAsPicker() {
         <span class="avatar sm">${esc(initials(fullName(t)))}</span>
         <span class="grow"><b>${esc(fullName(t))}</b><span class="muted small"> · ${esc(t.property_name)} · Unit ${esc(t.unit_number)}${t.account_number ? ` · #${esc(t.account_number)}` : ''}</span></span>
         <span class="badge ${esc(t.status)}">${esc(t.status)}</span></button>`).join('')
-      : '<div class="empty">No residents match.</div>';
+      : '<div class="empty">No tenants match.</div>';
   };
   draw();
   m.querySelector('[data-q]').addEventListener('input', (e) => draw(e.target.value));
@@ -119,7 +119,7 @@ const propertyOptions = (props) => props.map((p) => [p.id, propertyLabel(p)]);
 async function dashboard() {
   const d = await api('/admin/dashboard');
   const c = d.counts;
-  // Recovery: what residents were charged for utilities split from a bill (water & sewer) ÷ those bills.
+  // Recovery: what tenants were charged for utilities split from a bill (water & sewer) ÷ those bills.
   // Fixed charges (trash, pest control, internet…) have no bill behind them, so they are left out.
   const y = d.ytd;
   const recovery = y.city_bills ? Math.round(((y.split_billed ?? y.billed_to_residents) / y.city_bills) * 1000) / 10 : 0;
@@ -133,7 +133,7 @@ async function dashboard() {
       ${stat('Total units', c.total_units, '#/properties')}
       ${stat('Occupied', c.occupied_units, '#/properties')}
       ${stat('Vacant', Math.max(0, c.total_units - c.occupied_units), '#/properties')}
-      ${stat('Current residents', c.current_tenants, '#/tenants')}
+      ${stat('Current tenants', c.current_tenants, '#/tenants')}
       ${stat('Upcoming move-ins', c.upcoming_move_ins, '#/tenants')}
       ${stat('Move-outs next 30 days', c.move_outs_30d, '#/tenants')}
       ${stat('Batches not finalized', c.open_batches, '#/billing')}
@@ -143,7 +143,7 @@ async function dashboard() {
     </div>
     <div class="grid cards mb">
       ${stat('Utility bills this year', money(d.ytd.city_bills), '#/billing')}
-      ${stat('Billed to residents this year', money(d.ytd.billed_to_residents), '#/billing',
+      ${stat('Billed to tenants this year', money(d.ytd.billed_to_residents), '#/billing',
         `${money(y.split_billed || 0)} utilities + ${money(y.fixed_billed || 0)} fixed charges${otherBilled > 0 ? ` + ${money(otherBilled)} tax &amp; fees` : ''}`)}
       ${stat('Recovery rate', recovery + '%', '#/billing',
         `${money(y.split_billed || 0)} water &amp; sewer charged ÷ ${money(y.city_bills)} utility bills. Fixed charges not included.`)}
@@ -247,7 +247,7 @@ function deactivateProperty(p, after) {
     title: `Mark ${p.name} inactive`, submitLabel: 'Mark inactive',
     intro: `<p class="small">Use this when a property is sold or no longer managed. It is hidden from the Properties list, the Dashboard counts,
       the Tenants page and the pickers for new tenants and units. All billing batches, statements and exports are kept,
-      you can still create a final billing batch for it, and residents can still see their past statements. You can reactivate it at any time.</p>`,
+      you can still create a final billing batch for it, and tenants can still see their past statements. You can reactivate it at any time.</p>`,
     fields: [
       { name: 'inactive_date', label: 'Inactive since', type: 'date', required: true },
       { name: 'inactive_reason', label: 'Reason', placeholder: 'Sold' },
@@ -284,7 +284,7 @@ async function propertyDetail(id, tab) {
     <div class="grid cards mb">
       <div class="card stat"><div class="label">Total units</div><div class="value">${p.units_total}</div></div>
       <div class="card stat"><div class="label">Occupied</div><div class="value">${p.occupied_units}</div>
-        <div class="muted small">${p.current_tenants} current resident${p.current_tenants === 1 ? '' : 's'}</div></div>
+        <div class="muted small">${p.current_tenants} current tenant${p.current_tenants === 1 ? '' : 's'}</div></div>
       <div class="card stat"><div class="label">Vacant</div><div class="value">${p.vacant_units}</div></div>
       <div class="card stat"><div class="label">Occupancy</div><div class="value">${occupancy(p)}</div></div>
     </div>
@@ -332,7 +332,7 @@ async function unitsView(el, { propertyId }) {
         { label: 'Sq ft', value: (u) => Number(u.sqft).toLocaleString(), cls: 'num' },
         { label: 'Bedrooms', value: 'bedrooms', cls: 'num' },
         { label: 'Bathrooms', value: 'bathrooms', cls: 'num' },
-        { label: 'Current resident', value: (u) => u.current_tenant ? esc(u.current_tenant) : '<span class="muted">Vacant</span>' },
+        { label: 'Current tenant', value: (u) => u.current_tenant ? esc(u.current_tenant) : '<span class="muted">Vacant</span>' },
       ],
       rows: units,
       pageKey: `units-${propertyId || 'all'}`,
@@ -390,7 +390,7 @@ async function tenantForm({ title, values = {}, propertyId, onSave }) {
     { name: 'occupants', label: 'Number of people in unit', type: 'number', min: 0 },
     { name: 'mailing_address', label: 'Address', full: true },
     { name: 'move_in', label: 'Move-in date', type: 'date', required: true },
-    { name: 'move_out', label: 'Move-out date', type: 'date', help: 'Leave blank for current residents.' },
+    { name: 'move_out', label: 'Move-out date', type: 'date', help: 'Leave blank for current tenants.' },
     { name: 'forwarding_address', label: 'Forwarding address', full: true, help: 'Printed on the final bill instead of the apartment address.' },
     { name: 'notes', label: 'Notes', type: 'textarea', full: true },
   ];
@@ -437,7 +437,7 @@ async function tenantsView(el, { propertyId, filters = {} }) {
         ${propertyId ? '' : `<select name="property_id"><option value="">All active properties</option>
           ${props.map((p) => `<option value="${p.id}" ${String(filters.property_id) === String(p.id) ? 'selected' : ''}>${esc(propertyLabel(p))}</option>`).join('')}</select>`}
         <select name="tenant_status">
-          ${[['', 'All residents'], ['current', 'Current'], ['future', 'Future move-ins'], ['past', 'Moved out'], ['final_pending', 'Final bill pending'], ['signed_up', 'Signed up for portal'], ['not_signed_up', 'Not signed up']]
+          ${[['', 'All tenants'], ['current', 'Current'], ['future', 'Future move-ins'], ['past', 'Moved out'], ['final_pending', 'Final bill pending'], ['signed_up', 'Signed up for portal'], ['not_signed_up', 'Not signed up']]
             .map(([v, l]) => `<option value="${v}" ${filters.tenant_status === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
         <input name="q" placeholder="Search name, email, unit, account…" value="${esc(filters.q || '')}">
         <button type="submit">Search</button></form>
@@ -463,7 +463,7 @@ async function tenantsView(el, { propertyId, filters = {} }) {
       rows: tenants,
       pageKey: `tenants-${propertyId || 'all'}`,
       actions: (t) => rowActions([`<button class="link" data-action="edit" data-id="${t.id}">Edit</button>`], [
-        `<button class="link" data-action="viewAs" data-id="${t.id}">View as resident</button>`,
+        `<button class="link" data-action="viewAs" data-id="${t.id}">View as tenant</button>`,
         !t.move_out && `<button class="link" data-action="moveout" data-id="${t.id}">Move out</button>`,
         t.portal_active && `<button class="link" data-action="resetPortal" data-id="${t.id}">Reset login</button>`,
         t.locked_at ? `<button class="link" data-action="unlock" data-id="${t.id}">Unlock portal</button>`
@@ -472,7 +472,7 @@ async function tenantsView(el, { propertyId, filters = {} }) {
       empty: 'No tenants found. Add one, or import a CSV.',
     })}
     ${tenants.length && tenants.length <= 25 ? `<p class="muted small">${tenants.length} tenant${tenants.length === 1 ? '' : 's'}</p>` : ''}
-    ${filters.tenant_status === 'final_pending' ? `<div class="notice small">These residents moved out in the last 90 days, but no finalized billing batch covers their
+    ${filters.tenant_status === 'final_pending' ? `<div class="notice small">These tenants moved out in the last 90 days, but no finalized billing batch covers their
       move-out date yet. Their final bill is created automatically in the next batch for their property whose service period includes the move-out date.
       Add a forwarding address (Edit or Move out) so it prints on the final bill.</div>` : ''}`;
   el.replaceChildren(div);
@@ -500,7 +500,7 @@ async function tenantsView(el, { propertyId, filters = {} }) {
     moveout: ({ id }) => {
       const t = tenants.find((x) => x.id == id);
       formModal({ title: `Move out ${fullName(t)}`, submitLabel: 'Save move-out',
-        intro: '<p class="muted small">The next billing batch whose service period includes this date is prorated to it and becomes this resident\'s <b>final bill</b>.</p>',
+        intro: '<p class="muted small">The next billing batch whose service period includes this date is prorated to it and becomes this tenant\'s <b>final bill</b>.</p>',
         fields: [{ name: 'move_out', label: 'Move-out date', type: 'date', required: true, full: true },
           { name: 'forwarding_address', label: 'Forwarding address (for the final bill)', type: 'textarea', full: true,
             placeholder: '123 New St, Apt 4, Tallahassee, FL 32301' }],
@@ -512,7 +512,7 @@ async function tenantsView(el, { propertyId, filters = {} }) {
       formModal({ title: `Lock ${fullName(t)}'s portal account`, submitLabel: 'Lock account',
         intro: `<p class="small">They are signed out right away and can't sign in or re-activate until you unlock the account.
           They'll see "This account is locked. Please contact the office." Billing, statements and emails are not affected.</p>`,
-        fields: [{ name: 'reason', label: 'Reason (staff only, optional)', full: true, placeholder: 'e.g. Suspicious sign-ins, or requested by resident' }],
+        fields: [{ name: 'reason', label: 'Reason (staff only, optional)', full: true, placeholder: 'e.g. Suspicious sign-ins, or requested by tenant' }],
         onSubmit: async (d) => { await api(`/admin/tenants/${id}/lock`, { method: 'POST', body: d }); toast('Account locked'); reload(); } });
     },
     unlock: async ({ id }) => {
@@ -521,7 +521,7 @@ async function tenantsView(el, { propertyId, filters = {} }) {
       await api(`/admin/tenants/${id}/unlock`, { method: 'POST' }); toast('Account unlocked'); reload();
     },
     resetPortal: async ({ id }) => {
-      if (!(await confirmBox('Reset this resident\'s portal login? They will need to activate their account again.', 'Reset'))) return;
+      if (!(await confirmBox('Reset this tenant\'s portal login? They will need to activate their account again.', 'Reset'))) return;
       await api(`/admin/tenants/${id}/reset-portal`, { method: 'POST' }); toast('Portal login reset'); reload();
     },
     del: async ({ id }) => {
@@ -754,7 +754,7 @@ const dateTime = (sqlUtc) => {
   return d.toLocaleString('en-US', { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }), hour: 'numeric', minute: '2-digit' });
 };
 
-/** Signed up column: did the resident ever create their own portal login, and when. */
+/** Signed up column: did the tenant ever create their own portal login, and when. */
 function signedUpCell(t) {
   if (!t.portal_active) return '<span class="muted">No</span>';
   return t.activated_at
@@ -899,26 +899,26 @@ function unitImportModal(propertyId, after) {
 // --------------------------------------------------------------- utilities (split rules)
 
 const UTILITY_HELP = `<div class="notice small"><b>Two kinds of charges:</b> utilities <b>split from a bill</b> using RUBS (water, sewer, trash…),
-  and <b>fixed amounts per resident</b> (internet, cable, pest control…). Use "Show on statement as" to combine several into one line,
-  e.g. Water + Sewer → "Water & Sewer", or Internet + Pest Control + Trash → "Amenity Fee".<br><b>How the split works (RUBS):</b> First, <b>Recovery %</b> of the bill is passed to residents.
+  and <b>fixed amounts per tenant</b> (internet, cable, pest control…). Use "Show on statement as" to combine several into one line,
+  e.g. Water + Sewer → "Water & Sewer", or Internet + Pest Control + Trash → "Amenity Fee".<br><b>How the split works (RUBS):</b> First, <b>Recovery %</b> of the bill is passed to tenants.
   The rest (common areas, office, pool, etc.) is paid by the owner. That amount is then divided using the <b>weights</b>, for example
-  100 for square footage only, or 50 sq ft + 50 occupants. Each resident's share = their factor × days occupied ÷ the total for the property.
+  100 for square footage only, or 50 sq ft + 50 occupants. Each tenant's share = their factor × days occupied ÷ the total for the property.
   <br><b>Vacancy handling:</b> "Owner absorbs vacant units" counts vacant unit-days, so the owner pays the vacant share (recommended).
-  "Split among occupied units only" divides 100% of the billable amount among residents.</div>`;
+  "Split among occupied units only" divides 100% of the billable amount among tenants.</div>`;
 
 const UTILITY_FIELDS = [
   { name: 'utility_name', label: 'Utility / charge', required: true, placeholder: 'Water, Sewer, Trash, Pest Control, Internet…' },
   { name: 'charge_method', label: 'How it is charged', type: 'select', required: true,
-    options: [['rubs', 'Split a utility bill using RUBS'], ['flat', 'Fixed amount per resident']],
+    options: [['rubs', 'Split a utility bill using RUBS'], ['flat', 'Fixed amount per tenant']],
     help: 'Use "Fixed amount" for flat monthly charges like Internet, Cable or Pest Control that are not split from a bill.' },
   { name: 'statement_label', label: 'Show on statement as', placeholder: 'e.g. Water & Sewer, or Amenity Fee',
     help: 'Charges with the same name here are combined into one line on the statement and in the Rent Manager export. Leave blank to use the utility name.' },
   { name: 'rm_charge_code', label: 'Rent Manager charge code', help: 'For a combined line, the code of the first charge in the group (by order) is used.' },
   { type: 'heading', label: 'Fixed amount', group: 'flat' },
-  { name: 'flat_amount_cents', label: 'Amount per resident, per billing period ($)', type: 'money', min: 0, group: 'flat' },
+  { name: 'flat_amount_cents', label: 'Amount per tenant, per billing period ($)', type: 'money', min: 0, group: 'flat' },
   { name: 'flat_prorate', label: 'Prorate by days lived there (move-ins and move-outs)', type: 'checkbox', group: 'flat' },
   { type: 'heading', label: 'RUBS split', group: 'rubs' },
-  { name: 'recovery_pct', label: 'Recovery % billed to residents', type: 'number', min: 0, help: 'Example: 85 means 15% is deducted for common areas', group: 'rubs' },
+  { name: 'recovery_pct', label: 'Recovery % billed to tenants', type: 'number', min: 0, help: 'Example: 85 means 15% is deducted for common areas', group: 'rubs' },
   { name: 'vacancy_mode', label: 'Vacancy handling', type: 'select', required: true, group: 'rubs',
     options: [['owner', 'Owner absorbs vacant units'], ['occupied', 'Split among occupied units only']] },
   { name: 'w_sqft', label: 'Weight: square footage', type: 'number', min: 0, group: 'rubs' },
@@ -927,14 +927,14 @@ const UTILITY_FIELDS = [
   { name: 'w_equal', label: 'Weight: equal per unit', type: 'number', min: 0, group: 'rubs' },
   { name: 'vacant_occupants', label: 'Occupants assumed for vacant units', type: 'number', min: 0, help: 'Only used with the occupants weight and "owner absorbs"', group: 'rubs' },
   { type: 'heading', label: 'Other' },
-  { name: 'tax_pct', label: 'Tax % added to residents\' charge', type: 'number', min: 0, help: 'e.g. 10 for a 10% utility tax on water. Use 0 for none.' },
+  { name: 'tax_pct', label: 'Tax % added to tenants\' charge', type: 'number', min: 0, help: 'e.g. 10 for a 10% utility tax on water. Use 0 for none.' },
   { name: 'sort_order', label: 'Order on statement', type: 'number', help: 'Lower numbers are listed first.' },
   { name: 'active', label: 'Active', type: 'checkbox' },
   { name: 'notes', label: 'Notes', type: 'textarea', full: true },
 ];
 
 function describeCharge(u) {
-  if (u.charge_method === 'flat') return `Fixed ${money(u.flat_amount_cents)} per resident${u.flat_prorate ? ', prorated by days' : ''}`;
+  if (u.charge_method === 'flat') return `Fixed ${money(u.flat_amount_cents)} per tenant${u.flat_prorate ? ', prorated by days' : ''}`;
   return `${u.recovery_pct}% tenant contribution · ${describeAllocation(u)}`;
 }
 
@@ -957,7 +957,7 @@ async function utilitiesView(el, { propertyId }) {
     <button class="link danger" data-action="del" data-id="${u.id}">Delete</button>`;
   const div = document.createElement('div');
   div.innerHTML = `${lines.length ? `<div class="card mb statement-preview"><h3 class="m0">On the statement</h3>
-      <p class="small muted">How these charges will appear on each resident's statement (and as rows in the Rent Manager export):</p>
+      <p class="small muted">How these charges will appear on each tenant's statement (and as rows in the Rent Manager export):</p>
       <ul>${lines.map((l) => `<li><b>${esc(l.label)}</b> <span class="muted small">· ${esc(l.utils[0].rm_charge_code || 'no charge code')}${l.utils.length > 1 ? ` · combines ${l.utils.map((u) => esc(u.utility_name)).join(' + ')}` : ''}</span></li>`).join('')}</ul>
       ${mixedCodes.length ? `<div class="warn small">${mixedCodes.map((l) => `"${esc(l.label)}" combines charges with different Rent Manager codes. The combined line uses ${esc(l.utils[0].rm_charge_code || '(none)')}.`).join(' ')}</div>` : ''}
     </div>` : ''}
@@ -982,14 +982,14 @@ async function utilitiesView(el, { propertyId }) {
 
     <section class="mb">
       <div class="topbar"><div><h2 class="m0">2. Fixed monthly charges</h2>
-        <div class="muted small">Set the amount per resident here once, e.g. Trash, Pest Control, Internet or Cable. Every billing batch adds them automatically.</div></div>
+        <div class="muted small">Set the amount per tenant here once, e.g. Trash, Pest Control, Internet or Cable. Every billing batch adds them automatically.</div></div>
         <button class="primary" data-action="addFixed">+ Add fixed charge</button></div>
       ${table({
         columns: [
           { label: 'Charge', value: nameCell },
           { label: 'On statement as', value: lineCell },
           { label: 'RM charge code', value: 'rm_charge_code' },
-          { label: 'Amount per resident', value: (u) => `<b>${money(u.flat_amount_cents)}</b><div class="muted small">${u.flat_prorate ? 'prorated by days lived there' : 'full amount, not prorated'}</div>`, cls: 'num' },
+          { label: 'Amount per tenant', value: (u) => `<b>${money(u.flat_amount_cents)}</b><div class="muted small">${u.flat_prorate ? 'prorated by days lived there' : 'full amount, not prorated'}</div>`, cls: 'num' },
           { label: 'Tax', value: (u) => (Number(u.tax_pct) ? `${u.tax_pct}%` : '—'), cls: 'num' },
           { label: 'Order', value: 'sort_order', cls: 'num' },
         ],
@@ -1028,7 +1028,7 @@ async function exportsPage() {
   const props = await getProperties();
   const first = new Date(); first.setDate(1);
   const div = mount(`<div class="topbar"><h1>Export to Rent Manager</h1></div>
-    <div class="card mb"><h2>Resident charges (finalized statements)</h2>
+    <div class="card mb"><h2>Tenant charges (finalized statements)</h2>
       <p class="muted small">One row per charge on each statement (Water, Sewer, tax, fee), using each utility's Rent Manager charge code.
         Columns: PropertyCode, Unit, TenantAccount, TenantName, ChargeType, Amount, TransactionDate, DueDate, Comment, PeriodStart, PeriodEnd.
         Map these columns in your Rent Manager charge import template. You can also export a single batch from its page.</p>
@@ -1162,15 +1162,15 @@ async function systemView(el) {
       <section class="card sys-wide">
         <h2>Back up the database</h2>
         <p class="small">Downloads every table (properties, units, tenants, utilities, billing batches, statements, settings and staff)
-          as one file. Keep it somewhere safe. It contains residents' personal details.</p>
+          as one file. Keep it somewhere safe. It contains tenants' personal details.</p>
         <ul class="small">
           <li><b>SQL file</b>: can be loaded back into a Cloudflare D1 database (create the database, apply the files in
             <code>migrations/</code>, then <code>npx wrangler d1 execute &lt;database&gt; --remote --file=backup.sql</code>).</li>
           <li><b>JSON file</b>: easy to open in other tools, or to keep as a readable archive.</li>
         </ul>
-        <label class="check small"><input type="checkbox" data-secrets> Include passwords (hashed staff and resident passwords, and the SMTP password).
+        <label class="check small"><input type="checkbox" data-secrets> Include passwords (hashed staff and tenant passwords, and the SMTP password).
           Leave this off unless you need a full restore. Without it, staff accounts are left out (after a restore you create a new staff
-          login on the first-time setup screen) and residents activate their portal account again.</label>
+          login on the first-time setup screen) and tenants activate their portal account again.</label>
         <div class="row mt">
           <button class="primary" data-action="backup" data-format="sql">${ICONS.download}<span>Download SQL backup</span></button>
           <button data-action="backup" data-format="json">${ICONS.download}<span>Download JSON backup</span></button>
@@ -1252,7 +1252,7 @@ function backupSql(data, info) {
 
 // --------------------------------------------------------------- settings → security
 
-const KIND_LABEL = { staff: 'Staff sign-in', resident: 'Resident sign-in', activate: 'Resident activation', setup: 'First-time setup' };
+const KIND_LABEL = { staff: 'Staff sign-in', resident: 'Tenant sign-in', activate: 'Tenant activation', setup: 'First-time setup' };
 // A short "Chrome on Windows" style label from the browser's user agent.
 function deviceLabel(ua) {
   if (!ua) return '—';
@@ -1281,7 +1281,7 @@ async function securityView(el) {
           ${check(sec.altcha_enabled, sec.altcha_enabled ? '<b>Bot check (ALTCHA)</b> on sign-in, activation and setup forms. Self-hosted: no outside service and no tracking.' : '<b>Bot check (ALTCHA) is off.</b> Turn it on below to slow down automated password guessing.')}
           ${check(true, `<b>Failed sign-in lockout</b>: ${sec.max_failed_logins} wrong tries locks that email for ${sec.lockout_minutes} minutes. One internet address is also limited to ${sec.max_failed_logins * 4} failures across all emails.`)}
           ${check(true, '<b>Same answer for unknown emails</b>: the sign-in page doesn\'t reveal which emails have accounts.')}
-          ${check(true, '<b>Changing a password signs out your other devices</b>, and locking a resident signs them out right away.')}
+          ${check(true, '<b>Changing a password signs out your other devices</b>, and locking a tenant signs them out right away.')}
         </ul>
       </section>
       <section class="card">
@@ -1293,7 +1293,7 @@ async function securityView(el) {
             <div class="field"><label>Wrong passwords before lockout</label><input type="number" name="max_failed_logins" min="3" max="20" value="${sec.max_failed_logins}" required></div>
             <div class="field"><label>Lockout length (minutes)</label><input type="number" name="lockout_minutes" min="5" max="1440" value="${sec.lockout_minutes}" required></div>
             <div class="field"><label>Staff stay signed in for (hours)</label><input type="number" name="staff_session_hours" min="1" max="168" value="${sec.staff_session_hours}" required></div>
-            <div class="field"><label>Residents stay signed in for (days)</label><input type="number" name="resident_session_days" min="1" max="90" value="${sec.resident_session_days}" required></div>
+            <div class="field"><label>Tenants stay signed in for (days)</label><input type="number" name="resident_session_days" min="1" max="90" value="${sec.resident_session_days}" required></div>
             <div class="field"><label>Minimum password length</label><input type="number" name="min_password_length" min="8" max="64" value="${sec.min_password_length}" required>
               <div class="help">For new and changed passwords. Existing passwords keep working.</div></div>
           </div>
@@ -1303,11 +1303,11 @@ async function securityView(el) {
       </section>
       <section class="card">
         <h2>Signed-in sessions</h2>
-        <p class="small">Right now: <b>${ses.staff}</b> staff session${ses.staff === 1 ? '' : 's'} and <b>${ses.residents}</b> resident session${ses.residents === 1 ? '' : 's'}.
+        <p class="small">Right now: <b>${ses.staff}</b> staff session${ses.staff === 1 ? '' : 's'} and <b>${ses.tenants}</b> tenant session${ses.tenants === 1 ? '' : 's'}.
           If you think a password was stolen, sign everyone out, then change that password.</p>
         <div class="row">
           <button data-action="signOut" data-who="staff">Sign out all other staff</button>
-          <button data-action="signOut" data-who="residents">Sign out all residents</button>
+          <button data-action="signOut" data-who="tenants">Sign out all tenants</button>
           <button class="danger" data-action="signOut" data-who="all">Sign out everyone but me</button>
         </div>
       </section>
@@ -1356,7 +1356,7 @@ async function securityView(el) {
       toast(id ? `${id} can sign in again` : `Lockouts cleared (${r.cleared} failed tries forgotten)`); again();
     },
     signOut: async ({ who }) => {
-      const what = { staff: 'all other staff members', residents: 'all residents', all: 'everyone except you (staff and residents)' }[who];
+      const what = { staff: 'all other staff members', tenants: 'all tenants', all: 'everyone except you (staff and tenants)' }[who];
       if (!(await confirmBox(`Sign out ${what}? They'll need to sign in again.`, 'Sign out'))) return;
       const r = await api('/admin/security/sign-out-all', { method: 'POST', body: { who } });
       toast(`${r.signed_out} session${r.signed_out === 1 ? '' : 's'} signed out`); again();

@@ -1,4 +1,4 @@
-// Entry point: decides between first-time setup, sign in, admin app and resident portal.
+// Entry point: decides between first-time setup, sign in, admin app and tenant portal.
 import { api, esc, toast } from './ui.js';
 import { startAdmin } from './admin.js';
 import { startResident } from './resident.js';
@@ -40,7 +40,7 @@ async function boot() {
   return startResident(app, user, logout, stopPreview);
 }
 
-// Leave a staff "log in as a resident" preview and return to the staff screens.
+// Leave a staff "log in as a tenant" preview and return to the staff screens.
 async function stopPreview() {
   const r = await api('/auth/stop-view-as', { method: 'POST' });
   if (r.relogin) toast('Your staff session expired. Please sign in again.', true);
@@ -78,7 +78,7 @@ function brandPanel({ title, text, points }) {
 
 const RESIDENT_BRAND = {
   title: 'Your utility statements, all in one place.',
-  text: 'Sign in to the resident portal to see what you owe for water, sewer and other utilities, and why.',
+  text: 'Sign in to the tenant portal to see what you owe for water, sewer and other utilities, and why.',
   points: [
     ['doc', 'View and download every statement as a PDF'],
     ['chart', 'See exactly how your share was calculated'],
@@ -159,7 +159,7 @@ function loginScreen(mode = 'resident') {
   const staff = mode === 'staff';
   const box = render(staff ? STAFF_BRAND : RESIDENT_BRAND, `
     <div class="segmented" role="tablist">
-      <button type="button" role="tab" data-mode="resident" class="${staff ? '' : 'active'}" aria-selected="${!staff}">Resident</button>
+      <button type="button" role="tab" data-mode="resident" class="${staff ? '' : 'active'}" aria-selected="${!staff}">Tenant</button>
       <button type="button" role="tab" data-mode="staff" class="${staff ? 'active' : ''}" aria-selected="${staff}">Staff</button>
     </div>
     <h2>${staff ? 'Staff sign in' : 'Welcome back'}</h2>
@@ -189,7 +189,7 @@ function activateScreen() {
   const box = render(RESIDENT_BRAND, `
     <button type="button" class="link back" data-back>← Back to sign in</button>
     <h2>Activate your account</h2>
-    <p class="muted">Set up your resident portal login in one step. You'll need:</p>
+    <p class="muted">Set up your tenant portal login in one step. You'll need:</p>
     <ol class="steps-list">
       <li>Your <b>account number</b>, printed on your utility statement</li>
       <li>The <b>email address</b> the office has on file for you</li>

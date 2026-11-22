@@ -9,17 +9,17 @@ It runs entirely on free tiers: **GitHub** (code) + **Cloudflare Pages** (hostin
 - **CSV unit import**: one row per unit (Property short name, Unit, Sq Ft, Bedrooms, Bathrooms, Notes). Unit numbers are matched ignoring case, so existing units are updated instead of duplicated.
 - **CSV tenant import** (Property short name, Unit, Account Number, name and Move In required on every row) with flexible column names and MM/DD/YYYY or YYYY-MM-DD dates. Missing units are created automatically. Re-importing updates tenants by account number instead of duplicating them.
 - **Per-property utility split rules ("set asides")**:
-  - **Recovery %**: the share passed to residents. The rest is common area paid by the owner.
+  - **Recovery %**: the share passed to tenants. The rest is common area paid by the owner.
   - **Weighted split**: any mix of square footage, bedrooms, occupants and equal-per-unit.
   - **Vacancy handling**: the owner pays for vacant units, or the bill is split among occupied units only.
   - **Tax %** added on top of the share (e.g. 10% utility tax on water).
   - **Rent Manager charge code**.
-- **Batch billing**: one **billing batch** per bill from the utility company. Enter every amount on the bill (Water, Sewer…), and one click runs RUBS for all of them and builds **one statement per resident**.
+- **Batch billing**: one **billing batch** per bill from the utility company. Enter every amount on the bill (Water, Sewer…), and one click runs RUBS for all of them and builds **one statement per tenant**.
 - **Proration by days occupied**. By default days are counted like the city bill (end date minus start date, so Oct 6 – Nov 3 = 28 days). A move-out and move-in on the same day never overlap.
 - **PDF statements** in the property's own layout: header, account box, amount due, current charges, payment text, questions box and footer. Download one, or download all as a single PDF for printing.
 - **Email statements** with the PDF attached, through your SMTP provider (e.g. Maileroo), with a progress bar. Each statement records sent or failed. Includes a **Send test email** button.
 - **Rent Manager CSV export**: one row per charge (Water, Sewer, tax, fee) with its charge code. Optionally export only statements not exported before.
-- **Admin dashboard** and a **resident portal** where residents see and download their statements, with a plain-English "How was this calculated?".
+- **Admin dashboard** and a **tenant portal** where tenants see and download their statements, with a plain-English "How was this calculated?".
 
 ## How the RUBS math works
 
@@ -27,11 +27,11 @@ For each bill:
 
 1. `billable = bill total × recovery %`
 2. The billable amount is split into pools by the weights (e.g. 50% sq ft pool + 50% occupants pool).
-3. In each pool, a resident's share = `factor × days occupied ÷ sum of (factor × days) for all units`.
+3. In each pool, a tenant's share = `factor × days occupied ÷ sum of (factor × days) for all units`.
    The factor is the unit's sq ft, its bedrooms, the tenant's occupants, or 1 for an equal split.
 4. With **Owner absorbs vacant units**, vacant unit-days are included in the total, so the owner pays that share.
-   With **Occupied only**, residents split 100% of the billable amount.
-5. The admin fee is added per resident.
+   With **Occupied only**, tenants split 100% of the billable amount.
+5. The admin fee is added per tenant.
 
 The engine is in [`lib/rubs.js`](lib/rubs.js) and tested in [`tests/rubs.test.js`](tests/rubs.test.js).
 
@@ -89,9 +89,9 @@ In Cloudflare go to **Security → WAF → Rate limiting rules** (the free plan 
      - **Factors**: Occupancy, Square Feet, Bedrooms and Bathrooms, with percentages that must total 100%.
        - Square Feet, Bedrooms and Bathrooms each use either all units (the owner pays vacant units' share) or occupied units only.
        - Occupancy only counts occupied units, using the People field. **Count people as** sets the weighting: headcount, Conservice factored (1.0 / 1.6 / 1.9 / 2.2, +0.3 each additional), 1.0 + 0.5 per additional, or capped at 2.
-     - **Test calculation** runs the rule on a sample bill with the current units and residents, so you can compare it with Rent Manager's Test Calculation.
+     - **Test calculation** runs the rule on a sample bill with the current units and tenants, so you can compare it with Rent Manager's Test Calculation.
      - If the bill includes a tax that should be split the same way (e.g. the City's public service tax on water), add it as its own utility with the same rule and 0% "Tax added".
-   - **Fixed monthly charges**: Trash, Pest Control, Internet, Cable and so on, with an amount per resident (optionally prorated by days lived there). Every batch adds them automatically.
+   - **Fixed monthly charges**: Trash, Pest Control, Internet, Cable and so on, with an amount per tenant (optionally prorated by days lived there). Every batch adds them automatically.
    - **Show on statement as** combines charges into one statement line and one Rent Manager row, e.g. Water + Sewer → "Water & Sewer", or Internet + Pest Control + Trash → "Amenity Fee". The combined line uses the RM charge code of its first charge.
 4. On the property's **Units** tab, click **Import CSV** to load every unit, including vacant ones, with its square footage, bedrooms and bathrooms (see `public/unit-import-template.csv`). Re-importing updates existing units, and blank cells keep their current values.
 5. **Tenants → Import CSV** (see `public/tenant-import-template.csv`).
@@ -99,9 +99,9 @@ In Cloudflare go to **Security → WAF → Rate limiting rules** (the free plan 
 **Every billing cycle**
 1. **Billing → New billing batch**: pick the property, enter the service period and the amount for each utility from the bill, then **Save & calculate**. The property's fixed monthly charges are included automatically; untick one only if it's already billed in another batch for the same period.
    - **Bill date**: the day the bill arrived from the city, for your records only (not printed on statements). The **statement date** is also the transaction date in the Rent Manager export.
-   - **Owner discount (optional)**: a percent or dollar amount off the utility bill (e.g. a courtesy after a pool leak). It comes off before the split, so every resident's utility charge is lower; fixed charges aren't discounted. Statements, emails and the portal show the charges at full price, then **Total / Discounts / Grand total** (never the reason; it's kept for staff on the batch page). The Rent Manager export simply has the lower (discounted) amounts.
+   - **Owner discount (optional)**: a percent or dollar amount off the utility bill (e.g. a courtesy after a pool leak). It comes off before the split, so every tenant's utility charge is lower; fixed charges aren't discounted. Statements, emails and the portal show the charges at full price, then **Total / Discounts / Grand total** (never the reason; it's kept for staff on the batch page). The Rent Manager export simply has the lower (discounted) amounts.
 2. Review the statements (click **PDF** to preview any one), then click **Finalize statements**.
-3. Click **Email statements**. For residents without an email, use **Download all PDFs** and print theirs.
+3. Click **Email statements**. For tenants without an email, use **Download all PDFs** and print theirs.
 4. Click **Export CSV for Rent Manager** and import the file into Rent Manager.
 5. Moves: set the move-out date or add the new tenant before calculating. Proration is automatic.
 
@@ -113,7 +113,7 @@ In Cloudflare go to **Security → WAF → Rate limiting rules** (the free plan 
 **Selling a property**
 - Open the property and click **Mark inactive**, then enter the date and a reason such as "Sold".
 - It is hidden from the Properties list (see the **Inactive** filter), the Dashboard counts, the Tenants page and the pickers for new tenants, units and imports.
-- Billing history, statements and exports are kept. You can still create a final billing batch for it, and its residents can still see past statements.
+- Billing history, statements and exports are kept. You can still create a final billing batch for it, and its tenants can still see past statements.
 - Click **Reactivate** to undo.
 
 **Number of people per unit**
@@ -124,12 +124,12 @@ In Cloudflare go to **Security → WAF → Rate limiting rules** (the free plan 
   - **Move out** on a tenant row,
   - **Edit selected** (mass edit: the same move-out date or number of people for many tenants), or
   - re-importing your tenant list from Rent Manager. Tenants are matched by account number, so Move Out and Occupants are updated. Doing this before each billing cycle is the easiest routine.
-- A statement is the resident's **final bill** when their move-out date falls within the batch's service period. The PDF says "FINAL UTILITY STATEMENT", shows the move-out date and prints the **forwarding address** if one is entered. The email subject starts with "FINAL BILL -".
-- **Final bills pending** (Dashboard tile, and the Tenants filter) lists residents who moved out in the last 90 days whose move-out isn't covered by a finalized batch yet.
+- A statement is the tenant's **final bill** when their move-out date falls within the batch's service period. The PDF says "FINAL UTILITY STATEMENT", shows the move-out date and prints the **forwarding address** if one is entered. The email subject starts with "FINAL BILL -".
+- **Final bills pending** (Dashboard tile, and the Tenants filter) lists tenants who moved out in the last 90 days whose move-out isn't covered by a finalized batch yet.
 
 **Fixing a mistake**
 - **Wrong amount or dates:** if the batch is finalized, click **Reopen**. Then click **Edit bill** and recalculate.
-- **Undo a whole batch:** click **Delete batch**. This removes the batch and every resident statement in it, including from the resident portal.
+- **Undo a whole batch:** click **Delete batch**. This removes the batch and every tenant statement in it, including from the tenant portal.
   - A finalized, emailed or exported batch asks you to type DELETE to confirm.
   - If the statements were already exported, download the **reversal CSV** first. It has the same charges with negative amounts. Import it into Rent Manager to cancel the charges there.
   - Emails that were already sent can't be recalled.
@@ -138,26 +138,26 @@ In Cloudflare go to **Security → WAF → Rate limiting rules** (the free plan 
 
 `PropertyCode, Unit, TenantAccount, TenantName, ChargeType, Amount, TransactionDate, DueDate, Comment, PeriodStart, PeriodEnd`
 
-Lines on the same statement that share a charge code are combined into one row. For example, Water, Sewer and Utility tax all coded UTIL become a single UTIL charge per resident. Each resident's share is rounded to the penny, and the owner's share absorbs any rounding difference. To rename or reorder the columns, edit `RM_CHARGE_COLUMNS` in `functions/api/[[path]].js`.
+Lines on the same statement that share a charge code are combined into one row. For example, Water, Sewer and Utility tax all coded UTIL become a single UTIL charge per tenant. Each tenant's share is rounded to the penny, and the owner's share absorbs any rounding difference. To rename or reorder the columns, edit `RM_CHARGE_COLUMNS` in `functions/api/[[path]].js`.
 
-### Log in as a resident (staff preview)
+### Log in as a tenant (staff preview)
 
-Any staff member can see the portal exactly as a resident does. Click **Log in as a resident** in the sidebar and search for the resident, or click **View as resident** on a tenant row.
+Any staff member can see the portal exactly as a tenant does. Click **Log in as a tenant** in the sidebar and search for the tenant, or click **View as tenant** on a tenant row.
 - An orange banner shows whose portal you're viewing. Click **Back to staff view** to return.
-- The preview is read-only: residents' passwords and phone numbers can't be changed from it.
+- The preview is read-only: tenants' passwords and phone numbers can't be changed from it.
 - It ends after 2 hours.
-- It works even if the resident hasn't activated their portal.
+- It works even if the tenant hasn't activated their portal.
 
-### Resident portal security
+### Tenant portal security
 
-- The **Signed up** column shows whether the resident created their own portal login (Yes + date, or No). Filter the Tenants list by "Signed up for portal" / "Not signed up" to see who still hasn't. **Reset login** sets it back to No.
-- The Tenants list **Portal** column shows whether a resident has activated their account, plus their **last sign-in time and IP address**. Staff previews ("Log in as a resident") are not counted.
-- **Lock** signs the resident out right away and blocks signing in and re-activating ("This account is locked. Please contact the office."). It takes an optional staff-only reason. **Unlock** restores access with the same password.
+- The **Signed up** column shows whether the tenant created their own portal login (Yes + date, or No). Filter the Tenants list by "Signed up for portal" / "Not signed up" to see who still hasn't. **Reset login** sets it back to No.
+- The Tenants list **Portal** column shows whether a tenant has activated their account, plus their **last sign-in time and IP address**. Staff previews ("Log in as a tenant") are not counted.
+- **Lock** signs the tenant out right away and blocks signing in and re-activating ("This account is locked. Please contact the office."). It takes an optional staff-only reason. **Unlock** restores access with the same password.
 - Locking only affects portal access. Billing, statements and emails continue as normal. Staff can still preview a locked account.
 
-### Resident portal
+### Tenant portal
 
-Residents open the same URL and click **First time? Activate**. They enter their **account number** and the **email on file**, then choose a password. Residents only see finalized statements and can download them as PDFs. If **Settings → Company & email → Online payment link** is filled in (your Rent Manager Tenant Web Access address), the portal shows a **Pay online** button that opens it in a new tab, and every statement email gets a **Pay online** button and link (or put {pay_link} in the message). The app itself does not take payments or know balances. Staff can reset a resident's login from the Tenants page.
+Tenants open the same URL and click **First time? Activate**. They enter their **account number** and the **email on file**, then choose a password. Tenants only see finalized statements and can download them as PDFs. If **Settings → Company & email → Online payment link** is filled in (your Rent Manager Tenant Web Access address), the portal shows a **Pay online** button that opens it in a new tab, and every statement email gets a **Pay online** button and link (or put {pay_link} in the message). The app itself does not take payments or know balances. Staff can reset a tenant's login from the Tenants page.
 
 ## Run locally
 
@@ -184,7 +184,7 @@ Then open http://localhost:8788. To run the calculation tests: `npm test`.
 public/                 Front end (plain HTML/CSS/JS, no build step)
   js/admin.js           Admin dashboard
   js/billing.js         Billing batches, statements, email and settings screens
-  js/resident.js        Resident dashboard
+  js/resident.js        Tenant dashboard
   js/shared/            PDF statement layout (used by both the server and the browser)
 functions/api/          API router: [[path]].js
 lib/rubs.js             RUBS calculation engine
@@ -200,12 +200,12 @@ tests/             Calculation tests
 
 **Settings → Security** lists what protects the app and lets you change:
 
-- **"I'm not a robot" check (ALTCHA)** on staff sign-in, resident sign-in, activation and first-time setup.
+- **"I'm not a robot" check (ALTCHA)** on staff sign-in, tenant sign-in, activation and first-time setup.
   Self-hosted proof-of-work (widget files in `public/vendor/altcha`, MIT licence), no account or keys to set up:
   the signing keys are generated automatically and kept in the database.
 - **Failed sign-in lockout** (default 5 wrong passwords → 15 minutes, per email/account; one IP is limited to 4× that).
-- **Session length** for staff (hours) and residents (days), and the **minimum password length**.
-- Sign out all staff / all residents / everyone, unlock locked-out emails, and a **sign-in activity** log
+- **Session length** for staff (hours) and tenants (days), and the **minimum password length**.
+- Sign out all staff / all tenants / everyone, unlock locked-out emails, and a **sign-in activity** log
   (time, result, email, IP address, device), kept for 90 days.
 
 Always on: HTTPS only (HSTS), PBKDF2 password hashes, HttpOnly/Secure/SameSite=Strict cookies, a strict

@@ -26,6 +26,12 @@ export const DEFAULT_TEXT = {
   footer: 'Utilities are allocated to residents under the ratio utility billing method set out in your lease. This is not a bill from the utility company.',
 };
 
+// Default payment text: only mentions the office address when the property has one.
+function defaultPayment(p) {
+  const where = p.address ? `, or at the office at ${p.address}` : ', or at the leasing office';
+  return `This charge has been posted to your resident account. Pay it with your rent through the resident portal${where}. Please do not send payment to the utility company.`;
+}
+
 // Default "Questions?" text that only mentions the contact details the property actually has.
 function defaultQuestions(p) {
   const contact = p.phone && p.email ? `Call the office at ${p.phone} or email ${p.email}.`
@@ -40,6 +46,22 @@ function defaultQuestions(p) {
  * utility bill was lowered before it was split. The reason is never included.
  */
 export const discountCents = (lines) => (lines || []).reduce((s, l) => s + (l.discount_cents > 0 ? l.discount_cents : 0), 0);
+/** Amount shown on a charge line: before any discount (the discount gets its own line under the total). */
+export const lineGross = (l) => (l.discount_cents > 0 && l.original_cents ? l.original_cents : l.amount_cents);
+/**
+ * Totals block under the charges: with a discount -> Total / Discounts / Grand total;
+ * without one -> a single "Total for this statement".
+ */
+export function statementTotals(s) {
+  const disc = discountCents(s.lines);
+  if (!disc) return [{ label: 'Total for this statement', cents: s.total_cents, bold: true }];
+  return [
+    { label: 'Total', cents: s.total_cents + disc },
+    { label: 'Discounts', cents: -disc, discount: true },
+    { label: 'Grand total', cents: s.total_cents, bold: true },
+  ];
+}
+export const signedUsd = (cents) => (cents < 0 ? `-${usd(-cents)}` : usd(cents));
 export function discountSentence(lines) {
   const d = (lines || []).filter((l) => l.discount_cents > 0);
   if (!d.length) return '';
@@ -108,29 +130,27 @@ function drawStatement(page, s) {
   else if (s.final) page.text('Final bill', R - 8, y, { size: 8, color: MUTED, align: 'right' });
   y += 8;
   s.lines.forEach((ln, i) => {
-    const h = ln.discount_cents > 0 ? 28 : 18;
-    if (i % 2 === 0) page.rect(L, y, R - L, h, GRAY_BG);
+    if (i % 2 === 0) page.rect(L, y, R - L, 18, GRAY_BG);
     page.text(ln.label, L + 8, y + 12.5, { size: 9.5, color: TEXT });
-    page.text(usd(ln.amount_cents), R - 8, y + 12.5, { size: 9.5, color: TEXT, align: 'right' });
-    if (ln.discount_cents > 0) {
-      page.text(`Discount applied: ${usd(ln.discount_cents)} off (was ${usd(ln.original_cents)})`, L + 16, y + 23, { size: 7.5, color: MUTED });
-    }
-    y += h;
+    page.text(usd(lineGross(ln)), R - 8, y + 12.5, { size: 9.5, color: TEXT, align: 'right' });
+    y += 18;
   });
   page.line(L, y + 1, R, y + 1, GRAY_LINE, 1);
-  y += 17;
-  page.text('Total for this statement', L + 8, y, { size: 9.5, weight: 'bold', color: TEXT });
-  page.text(usd(s.total_cents), R - 8, y, { size: 9.5, weight: 'bold', color: TEXT, align: 'right' });
-  if (discountCents(s.lines)) {
-    y += 13;
-    page.text(`Includes a discount of ${usd(discountCents(s.lines))}.`, R - 8, y, { size: 7.5, color: MUTED, align: 'right' });
-  }
+  const totals = statementTotals(s);
+  totals.forEach((t, i) => {
+    y += i === 0 ? 17 : 15;
+    // A rule above the grand total when there is a discount.
+    if (t.bold && totals.length > 1) { page.line(L, y - 10, R, y - 10, GRAY_LINE, 0.75); y += 3; }
+    const opt = { size: 9.5, color: t.discount ? '#067647' : TEXT, ...(t.bold ? { weight: 'bold' } : {}) };
+    page.text(t.label, L + 8, y, opt);
+    page.text(signedUsd(t.cents), R - 8, y, { ...opt, align: 'right' });
+  });
 
   // Payment
   y += 34;
   page.text('PAYMENT', L, y, { size: 10, weight: 'bold', color: NAVY });
   page.line(L, y + 6, R, y + 6, GRAY_LINE, 1);
-  y = page.paragraph(fillTemplate(p.payment_text || DEFAULT_TEXT.payment, vars), L + 8, y + 22, R - L - 40, { size: 9, color: TEXT, leading: 12.5 });
+  y = page.paragraph((p.payment_text ? fillTemplate(p.payment_text, vars) : defaultPayment(p)), L + 8, y + 22, R - L - 40, { size: 9, color: TEXT, leading: 12.5 });
 
   // Questions box
   y += 28;

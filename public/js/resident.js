@@ -1,6 +1,7 @@
 // Resident portal: latest amount due, statements with PDFs and "how was this calculated",
 // account and unit details. Also used for the read-only staff preview ("Log in as a resident").
 import { api, esc, money, date, fullName, toast, formModal, onActions, ICONS, initials } from './ui.js';
+import { lineGross, discountCents, statementTotals } from './shared/statement-pdf.js';
 
 const BASIS = { sqft: 'square footage', bedrooms: 'bedrooms', bathrooms: 'bathrooms', occupants: 'number of people', equal: 'equal share per unit' };
 const pdfUrl = (st) => `/api/resident/statements/${st.id}/pdf`;
@@ -24,8 +25,8 @@ function statementCard(st, moveOut) {
         <div class="muted small">Statement ${date(st.statement_date)} · Due by ${date(st.due_date)}</div></div>
       <div class="stmt-total">${money(st.total_cents)}</div>
     </div>
-    <ul class="stmt-lines">${st.lines.map((l) => `<li><span>${esc(l.label)}${l.discount_cents > 0
-      ? `<span class="discount-text small">Discount applied: ${money(l.discount_cents)} off (was ${money(l.original_cents)})</span>` : ''}</span><span>${money(l.amount_cents)}</span></li>`).join('')}</ul>
+    <ul class="stmt-lines">${st.lines.map((l) => `<li><span>${esc(l.label)}</span><span>${money(lineGross(l))}</span></li>`).join('')}
+      ${discountCents(st.lines) ? statementTotals(st).map((t, i) => `<li class="stmt-total-row${i === 0 ? ' first' : ''}${t.bold ? ' grand' : ''}${t.discount ? ' discount-text' : ''}"><span>${esc(t.label)}</span><span>${t.cents < 0 ? '-' : ''}${money(Math.abs(t.cents))}</span></li>`).join('') : ''}</ul>
     <div class="stmt-foot">
       <details><summary>How was this calculated?</summary><div class="small how">${howCalculated(st)}</div></details>
       <a class="btn" href="${pdfUrl(st)}" target="_blank" rel="noopener">${ICONS.download}<span>PDF</span></a>

@@ -98,7 +98,7 @@ In Cloudflare go to **Security → WAF → Rate limiting rules** (the free plan 
 
 **Every billing cycle**
 1. **Billing → New billing batch**: pick the property, enter the service period and the amount for each utility from the bill, then **Save & calculate**. The property's fixed monthly charges are included automatically; untick one only if it's already billed in another batch for the same period.
-   - **Owner discount (optional)**: a percent or dollar amount off the utility bill (e.g. a courtesy after a pool leak). It comes off before the split, so every resident's utility charge is lower; fixed charges aren't discounted. Statements, emails and the portal show "Discount applied: $X off (was $Y)", never the reason (the reason is kept for staff on the batch page). The Rent Manager export simply has the lower amounts.
+   - **Owner discount (optional)**: a percent or dollar amount off the utility bill (e.g. a courtesy after a pool leak). It comes off before the split, so every resident's utility charge is lower; fixed charges aren't discounted. Statements, emails and the portal show the charges at full price, then **Total / Discounts / Grand total** (never the reason; it's kept for staff on the batch page). The Rent Manager export simply has the lower (discounted) amounts.
 2. Review the statements (click **PDF** to preview any one), then click **Finalize statements**.
 3. Click **Email statements**. For residents without an email, use **Download all PDFs** and print theirs.
 4. Click **Export CSV for Rent Manager** and import the file into Rent Manager.

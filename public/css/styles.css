@@ -451,3 +451,7 @@ dl.kv dd { overflow-wrap: anywhere; }
   table.lines tfoot tr { display: flex; justify-content: space-between; }
   table.lines input[type=checkbox] { width: auto; margin-top: .3rem; }
 }
+.stmt-lines li.stmt-total-row { border-bottom: 0; padding: .25rem 0; }
+.stmt-lines li.stmt-total-row.first, .stmt-lines li.stmt-total-row.grand { border-top: 1px solid var(--line); }
+.stmt-lines li.stmt-total-row.grand { font-weight: 700; padding-top: .45rem; }
+.stmt-lines li.discount-text { display: flex; color: var(--ok); }

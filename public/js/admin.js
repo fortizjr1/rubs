@@ -119,9 +119,13 @@ const propertyOptions = (props) => props.map((p) => [p.id, propertyLabel(p)]);
 async function dashboard() {
   const d = await api('/admin/dashboard');
   const c = d.counts;
-  const recovery = d.ytd.city_bills ? Math.round((d.ytd.billed_to_residents / d.ytd.city_bills) * 1000) / 10 : 0;
-  const stat = (label, value, href) => `<a class="card stat plain" href="${href}">
-    <div class="label">${label}</div><div class="value">${value}</div></a>`;
+  // Recovery: what residents were charged for utilities split from a bill (water & sewer) ÷ those bills.
+  // Fixed charges (trash, pest control, internet…) have no bill behind them, so they are left out.
+  const y = d.ytd;
+  const recovery = y.city_bills ? Math.round(((y.split_billed ?? y.billed_to_residents) / y.city_bills) * 1000) / 10 : 0;
+  const otherBilled = y.billed_to_residents - (y.split_billed || 0) - (y.fixed_billed || 0);
+  const stat = (label, value, href, sub = '') => `<a class="card stat plain" href="${href}">
+    <div class="label">${label}</div><div class="value">${value}</div>${sub ? `<div class="muted small">${sub}</div>` : ''}</a>`;
   const div = mount(`<div class="topbar"><h1>Dashboard</h1>
       <div class="row"><button data-action="import">Import tenants</button><button class="primary" data-action="newRun">+ New billing batch</button></div></div>
     <div class="grid cards mb">
@@ -139,8 +143,10 @@ async function dashboard() {
     </div>
     <div class="grid cards mb">
       ${stat('Utility bills this year', money(d.ytd.city_bills), '#/billing')}
-      ${stat('Billed to residents this year', money(d.ytd.billed_to_residents), '#/billing')}
-      ${stat('Recovery rate', recovery + '%', '#/billing')}
+      ${stat('Billed to residents this year', money(d.ytd.billed_to_residents), '#/billing',
+        `${money(y.split_billed || 0)} utilities + ${money(y.fixed_billed || 0)} fixed charges${otherBilled > 0 ? ` + ${money(otherBilled)} tax &amp; fees` : ''}`)}
+      ${stat('Recovery rate', recovery + '%', '#/billing',
+        `${money(y.split_billed || 0)} water &amp; sewer charged ÷ ${money(y.city_bills)} utility bills. Fixed charges not included.`)}
     </div>
     <h2>Recent billing batches</h2>
     ${runsTable(d.recent_runs)}`);

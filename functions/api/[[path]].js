@@ -729,11 +729,19 @@ async function adminDashboard(db) {
          WHERE r.status = 'finalized' AND s.emailed_at IS NULL AND t.email IS NOT NULL) AS unsent_statements,
       (SELECT COUNT(*) FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id
          WHERE r.status = 'finalized' AND s.exported_at IS NULL) AS unexported_statements`),
+    // Recovery only counts utilities split from a bill (water, sewer); fixed charges have no bill behind them.
     db.prepare(`SELECT
       COALESCE((SELECT SUM(b.total_cents) FROM bills b JOIN billing_runs r ON r.id = b.billing_run_id
-        WHERE r.status = 'finalized' AND r.period_end >= date('now','start of year')),0) AS city_bills,
+        JOIN property_utilities pu ON pu.id = b.property_utility_id
+        WHERE r.status = 'finalized' AND r.period_end >= date('now','start of year') AND pu.charge_method != 'flat'),0) AS city_bills,
       COALESCE((SELECT SUM(s.total_cents) FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id
-        WHERE r.status = 'finalized' AND r.period_end >= date('now','start of year')),0) AS billed_to_residents`),
+        WHERE r.status = 'finalized' AND r.period_end >= date('now','start of year')),0) AS billed_to_residents,
+      COALESCE((SELECT SUM(c.share_cents + c.admin_fee_cents) FROM charges c JOIN bills b ON b.id = c.bill_id
+        JOIN billing_runs r ON r.id = b.billing_run_id JOIN property_utilities pu ON pu.id = b.property_utility_id
+        WHERE r.status = 'finalized' AND r.period_end >= date('now','start of year') AND pu.charge_method != 'flat'),0) AS split_billed,
+      COALESCE((SELECT SUM(c.share_cents + c.admin_fee_cents) FROM charges c JOIN bills b ON b.id = c.bill_id
+        JOIN billing_runs r ON r.id = b.billing_run_id JOIN property_utilities pu ON pu.id = b.property_utility_id
+        WHERE r.status = 'finalized' AND r.period_end >= date('now','start of year') AND pu.charge_method = 'flat'),0) AS fixed_billed`),
     db.prepare(`SELECT r.id, r.period_start, r.period_end, r.status, p.name AS property_name,
       (SELECT COALESCE(SUM(total_cents),0) FROM bills b WHERE b.billing_run_id = r.id) AS city_total_cents,
       (SELECT COALESCE(SUM(total_cents),0) FROM statements s WHERE s.billing_run_id = r.id) AS billed_cents,

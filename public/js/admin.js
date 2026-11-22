@@ -40,6 +40,7 @@ export function startAdmin(app, user, logout) {
 // ---- "Log in as a tenant": opens a read-only tenant session (staff preview)
 async function viewAsResident(tenantId) {
   await api(`/admin/tenants/${tenantId}/view-as`, { method: 'POST' });
+  window.onhashchange = null; // don't load a staff page under the tenant session while the page reloads
   location.hash = '';
   location.reload();
 }
@@ -1209,6 +1210,7 @@ async function systemView(el) {
       buttons.forEach((b) => (b.disabled = true));
       try {
         const secrets = div.querySelector('[data-secrets]').checked;
+        await api('/admin/system/backup-log', { method: 'POST', body: { format, secrets } }); // goes in the activity log
         const data = {};
         for (const table of s.backup_tables) {
           data[table] = [];
@@ -1291,7 +1293,7 @@ async function securityView(el) {
           ${check(true, '<b>Secure sign-in cookies</b> (HttpOnly, Secure, SameSite=Strict), so other websites can\'t use your session.')}
           ${check(true, '<b>Strict browser security headers</b>: no outside scripts, no framing of the app (stops click-jacking), no camera/mic/location access.')}
           ${check(sec.altcha_enabled, sec.altcha_enabled ? '<b>Bot check (ALTCHA)</b> on sign-in, activation and setup forms. Self-hosted: no outside service and no tracking.' : '<b>Bot check (ALTCHA) is off.</b> Turn it on below to slow down automated password guessing.')}
-          ${check(true, `<b>Failed sign-in lockout</b>: ${sec.max_failed_logins} wrong tries locks that email for ${sec.lockout_minutes} minutes. One internet address is also limited to ${sec.max_failed_logins * 4} failures across all emails.`)}
+          ${check(true, `<b>Failed sign-in lockout</b>: ${sec.max_failed_logins} wrong tries from one internet address locks that email for that address for ${sec.lockout_minutes} minutes, so a stranger guessing can't lock the real person out. An email is also limited to ${sec.max_failed_logins * 5} failures from everywhere, and one address to ${sec.max_failed_logins * 4} failures across all emails.`)}
           ${check(true, '<b>Same answer for unknown emails</b>: the sign-in page doesn\'t reveal which emails have accounts.')}
           ${check(true, '<b>Changing a password signs out your other devices</b>, and locking a tenant signs them out right away.')}
         </ul>
@@ -1325,7 +1327,7 @@ async function securityView(el) {
       </section>
       <section class="card">
         <h2>Locked out right now</h2>
-        ${act.locked.length ? `<table class="plain small"><tbody>${act.locked.map((l) => `<tr><td>${esc(l.identifier)}<div class="muted">${l.n} failed tries, last ${esc(dateTime(l.last))}</div></td>
+        ${act.locked.length ? `<table class="plain small"><tbody>${act.locked.map((l) => `<tr><td>${esc(l.identifier)}<div class="muted">${l.n} failed tries from ${esc(l.ip || 'an unknown address')}, last ${esc(dateTime(l.last))}</div></td>
             <td class="right"><button class="link" data-action="unlock" data-id="${esc(l.identifier)}">Unlock</button></td></tr>`).join('')}</tbody></table>
             <button class="link" data-action="unlock">Unlock everyone</button>`
           : '<p class="small muted m0">Nobody is locked out.</p>'}

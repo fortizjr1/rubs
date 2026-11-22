@@ -4,16 +4,16 @@
 import { toCSV, csvResponse, dollars } from '../../lib/csv.js';
 import {
   hashPassword, verifyPassword, createSession, sessionCookie, hashIterations, storedIterations,
-  getSession, readSessionToken,
+  getSession, readSessionToken, hashSessionToken,
 } from '../../lib/auth.js';
 import { HttpError, json, body, today, blank, coerce } from '../../lib/util.js';
-import { loadSettings, saveSettings, sendTestEmail } from '../../lib/settings.js';
+import { loadSettings, saveSettings, sendTestEmail, smtpConfig } from '../../lib/settings.js';
 import { systemInfo, backupPage, getPlan, setPlan } from '../../lib/system.js';
 import { activityPrepare, activityRecord, listActivity } from '../../lib/activity.js';
 import { requestReset, checkResetToken, hashToken } from '../../lib/password-reset.js';
 import { ownerReportPdf } from '../../lib/owner-report.js';
 import {
-  loadSecurity, saveSecurity, validatePassword, clientIp, checkLockout, recordAttempt, signInActivity, clearLockouts,
+  loadSecurity, parseSecurity, saveSecurity, validatePassword, clientIp, checkLockout, recordAttempt, signInActivity, clearLockouts,
   createAltchaChallenge, verifyAltcha,
 } from '../../lib/security.js';
 import { runChecks,
@@ -749,15 +749,15 @@ async function adminDashboard(db) {
     db.prepare(`SELECT
       COALESCE((SELECT SUM(b.total_cents) FROM bills b JOIN billing_runs r ON r.id = b.billing_run_id
         JOIN property_utilities pu ON pu.id = b.property_utility_id
-        WHERE r.status = 'finalized' AND r.period_end >= date('now','start of year') AND pu.charge_method != 'flat'),0) AS city_bills,
+        WHERE r.status = 'finalized' AND strftime('%Y', r.period_end) = strftime('%Y', 'now') AND pu.charge_method != 'flat'),0) AS city_bills,
       COALESCE((SELECT SUM(s.total_cents) FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id
-        WHERE r.status = 'finalized' AND r.period_end >= date('now','start of year')),0) AS billed_to_residents,
+        WHERE r.status = 'finalized' AND strftime('%Y', r.period_end) = strftime('%Y', 'now')),0) AS billed_to_residents,
       COALESCE((SELECT SUM(c.share_cents + c.admin_fee_cents) FROM charges c JOIN bills b ON b.id = c.bill_id
         JOIN billing_runs r ON r.id = b.billing_run_id JOIN property_utilities pu ON pu.id = b.property_utility_id
-        WHERE r.status = 'finalized' AND r.period_end >= date('now','start of year') AND pu.charge_method != 'flat'),0) AS split_billed,
+        WHERE r.status = 'finalized' AND strftime('%Y', r.period_end) = strftime('%Y', 'now') AND pu.charge_method != 'flat'),0) AS split_billed,
       COALESCE((SELECT SUM(c.share_cents + c.admin_fee_cents) FROM charges c JOIN bills b ON b.id = c.bill_id
         JOIN billing_runs r ON r.id = b.billing_run_id JOIN property_utilities pu ON pu.id = b.property_utility_id
-        WHERE r.status = 'finalized' AND r.period_end >= date('now','start of year') AND pu.charge_method = 'flat'),0) AS fixed_billed`),
+        WHERE r.status = 'finalized' AND strftime('%Y', r.period_end) = strftime('%Y', 'now') AND pu.charge_method = 'flat'),0) AS fixed_billed`),
     db.prepare(`SELECT r.id, r.period_start, r.period_end, r.status, r.calc_summary, p.name AS property_name,
       (SELECT COALESCE(SUM(total_cents),0) FROM bills b WHERE b.billing_run_id = r.id) AS city_total_cents,
       (SELECT COALESCE(SUM(total_cents),0) FROM statements s WHERE s.billing_run_id = r.id) AS billed_cents,
@@ -785,7 +785,8 @@ async function recordResidentLogin(db, tenantId, request) {
 
 // ---------------------------------------------------------------- router
 
-async function handle({ request, env }) {
+async function handle(context) {
+  const { request, env } = context;
   const db = env.DB;
   if (!db) throw new HttpError(500, 'D1 database binding "DB" is not configured');
   const url = new URL(request.url);
@@ -797,24 +798,32 @@ async function handle({ request, env }) {
   if (seg[0] === 'auth') {
     const action = seg[1];
     if (action === 'status' && method === 'GET') {
-      const needsSetup = !(await db.prepare('SELECT 1 FROM admins LIMIT 1').first());
+      // Runs on every page load: the session first, then everything else in one round trip.
       const s = await getSession(db, request);
+      const [setupR, settingsR, adminR, tenantR] = await db.batch([
+        db.prepare('SELECT 1 AS x FROM admins LIMIT 1'),
+        db.prepare("SELECT key, value FROM settings WHERE key IN ('company_name', 'payment_url') OR key LIKE 'sec\\_%' ESCAPE '\\'"),
+        // The signed-in staff member, or the staff member previewing a tenant's portal.
+        db.prepare('SELECT id, email, name FROM admins WHERE id = ?').bind(s?.user_type === 'admin' ? s.user_id : s?.impersonated_by ?? -1),
+        db.prepare('SELECT id, email, first_name, last_name, locked_at FROM tenants WHERE id = ?').bind(s?.user_type === 'tenant' ? s.user_id : -1),
+      ]);
+      const needsSetup = !setupR.results.length;
       let user = null;
       if (s?.user_type === 'admin') {
-        const a = await db.prepare('SELECT id, email, name FROM admins WHERE id = ?').bind(s.user_id).first();
+        const a = adminR.results[0];
         if (a) user = { type: 'admin', ...a };
       } else if (s?.user_type === 'tenant') {
-        const t = await db.prepare('SELECT id, email, first_name, last_name, locked_at FROM tenants WHERE id = ?').bind(s.user_id).first();
+        const t = tenantR.results[0];
         if (t && (!t.locked_at || s.impersonated_by)) user = { type: 'tenant', id: t.id, email: t.email, name: `${t.first_name || ''} ${t.last_name}`.trim() };
         if (user && s.impersonated_by) {
-          const a = await db.prepare('SELECT name, email FROM admins WHERE id = ?').bind(s.impersonated_by).first();
+          const a = adminR.results[0];
           user.preview = { staff: a ? a.name || a.email : 'Staff', expires_at: s.expires_at };
         }
       }
       // Company name is shown on the sign-in page (it is printed on every statement anyway).
-      const rows = (await db.prepare("SELECT key, value FROM settings WHERE key IN ('company_name', 'payment_url')").all()).results;
+      const rows = settingsR.results;
       const setting = (k) => rows.find((r) => r.key === k)?.value || '';
-      const sec = await loadSecurity(db);
+      const sec = parseSecurity(rows);
       return json({ needsSetup, user, company_name: setting('company_name'), payment_url: setting('payment_url'),
         altcha: sec.altcha_enabled, min_password_length: sec.min_password_length });
     }
@@ -912,9 +921,15 @@ async function handle({ request, env }) {
         }
       }
       if (!coerce('email', email || null, 'Email')) throw new HttpError(400, 'Enter the email address the office has on file for you');
-      const r = await requestReset(db, email, url.origin);
-      // Requests for unknown emails count as failures, so guessing many addresses gets locked out.
-      await recordAttempt(db, request, { kind: 'reset', identifier, success: r.sent, reason: r.sent ? 'reset email sent' : 'no portal account' });
+      // If email isn't set up, say so to everyone (before looking anyone up).
+      try { smtpConfig(await loadSettings(db, { includeSecrets: true })); } catch { throw new HttpError(503, "Password reset emails aren't set up yet. Please contact the office."); }
+      // The lookup and the email run after the answer is sent, so the response takes the same time
+      // whether or not the address has an account. Unknown addresses count as failures (lockout).
+      const work = requestReset(db, email, url.origin)
+        .then((r) => recordAttempt(db, request, { kind: 'reset', identifier, success: r.sent,
+          reason: r.sent ? 'reset email sent' : r.limited ? 'too many reset emails this hour' : 'no portal account' }))
+        .catch((e) => { console.error('password reset email', e); return recordAttempt(db, request, { kind: 'reset', identifier, success: false, reason: 'reset email failed to send' }).catch(() => {}); });
+      if (context.waitUntil) context.waitUntil(work); else await work;
       return json({ ok: true, message: "If that email has a tenant portal account, we've sent a link to reset the password. It expires in 60 minutes." });
     }
     if (action === 'reset-check' && method === 'POST') {
@@ -951,16 +966,21 @@ async function handle({ request, env }) {
       const s = await getSession(db, request);
       if (!s?.impersonated_by) throw new HttpError(400, 'You are not viewing the portal as a tenant');
       const back = s.return_token
-        ? await db.prepare("SELECT token FROM sessions WHERE token = ? AND user_type = 'admin' AND user_id = ? AND expires_at > ?")
+        ? await db.prepare("SELECT token, expires_at FROM sessions WHERE token = ? AND user_type = 'admin' AND user_id = ? AND expires_at > ?")
           .bind(s.return_token, s.impersonated_by, new Date().toISOString()).first()
         : null;
       await db.prepare('DELETE FROM sessions WHERE token = ?').bind(s.token).run();
       if (!back) return json({ ok: true, relogin: true }, 200, { 'Set-Cookie': sessionCookie('', 0) });
-      return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(back.token) });
+      // Only a hash of the staff session is stored, so its cookie can't be rebuilt: swap it for a
+      // fresh staff session that ends when the original would have.
+      await db.prepare('DELETE FROM sessions WHERE token = ?').bind(back.token).run();
+      const token = await createSession(db, 'admin', s.impersonated_by, { expiresAt: back.expires_at });
+      const seconds = Math.max(60, Math.floor((new Date(back.expires_at).getTime() - Date.now()) / 1000));
+      return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie(token, seconds) });
     }
     if (action === 'logout' && method === 'POST') {
       const token = readSessionToken(request);
-      if (token) await db.prepare('DELETE FROM sessions WHERE token = ?').bind(token).run();
+      if (token) await db.prepare('DELETE FROM sessions WHERE token = ?').bind(await hashSessionToken(token)).run();
       return json({ ok: true }, 200, { 'Set-Cookie': sessionCookie('', 0) });
     }
     throw new HttpError(404, 'Not found');
@@ -980,6 +1000,11 @@ async function handle({ request, env }) {
         throw new HttpError(401, LOCKED_MESSAGE);
       }
     }
+    // The same person can have more than one tenant record (they moved units): same email and name.
+    const mine = (await db.prepare(`SELECT o.id FROM tenants t JOIN tenants o ON o.id = t.id OR (t.email IS NOT NULL AND o.email = t.email COLLATE NOCASE
+          AND lower(trim(COALESCE(o.first_name, '') || ' ' || o.last_name)) = lower(trim(COALESCE(t.first_name, '') || ' ' || t.last_name)))
+        WHERE t.id = ?`).bind(tid).all()).results.map((r) => r.id);
+    if (!mine.includes(tid)) mine.push(tid);
     if (seg[1] === 'me' && method === 'GET') {
       const me = await db.prepare(
         `SELECT t.id, t.first_name, t.last_name, t.email, t.phone, t.account_number, t.mailing_address,
@@ -988,16 +1013,17 @@ async function handle({ request, env }) {
          FROM tenants t JOIN units u ON u.id = t.unit_id JOIN properties p ON p.id = u.property_id WHERE t.id = ?`,
       ).bind(tid).first();
       const statements = (await db.prepare(
-        `SELECT s.id, s.days, s.total_cents, s.lines, r.period_start, r.period_end, r.statement_date, r.due_date
-         FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id
-         WHERE s.tenant_id = ? AND r.status = 'finalized' ORDER BY r.period_end DESC, s.id DESC`,
-      ).bind(tid).all()).results;
+        `SELECT s.id, s.days, s.total_cents, s.lines, r.period_start, r.period_end, r.statement_date, r.due_date,
+                u.unit_number, t.move_out AS tenant_move_out
+         FROM statements s JOIN billing_runs r ON r.id = s.billing_run_id JOIN units u ON u.id = s.unit_id JOIN tenants t ON t.id = s.tenant_id
+         WHERE s.tenant_id IN (${inList(mine)}) AND r.status = 'finalized' ORDER BY r.period_end DESC, s.id DESC`,
+      ).bind(...mine).all()).results;
       const charges = (await db.prepare(
         `SELECT c.statement_id, c.days, c.period_days, c.share_cents, c.tax_cents, c.detail, b.total_cents AS bill_total_cents, json_extract(b.calc_summary, '$.discount_cents') AS bill_discount_cents, pu.utility_name
          FROM charges c JOIN bills b ON b.id = c.bill_id JOIN property_utilities pu ON pu.id = b.property_utility_id
          JOIN billing_runs r ON r.id = b.billing_run_id
-         WHERE c.tenant_id = ? AND r.status = 'finalized' ORDER BY pu.sort_order, pu.id`,
-      ).bind(tid).all()).results;
+         WHERE c.tenant_id IN (${inList(mine)}) AND r.status = 'finalized' ORDER BY pu.sort_order, pu.id`,
+      ).bind(...mine).all()).results;
       const out = statements.map((s) => ({
         ...s, lines: JSON.parse(s.lines),
         charges: charges.filter((c) => c.statement_id === s.id).map((c) => ({ ...c, detail: c.detail ? JSON.parse(c.detail) : null })),
@@ -1005,7 +1031,9 @@ async function handle({ request, env }) {
       return json({ me, statements: out });
     }
     if (seg[1] === 'statements' && seg[3] === 'pdf' && method === 'GET') {
-      const [s] = await statementRenderData(db, { statementId: seg[2], tenantId: tid, onlyFinalized: true });
+      const owner = await db.prepare('SELECT tenant_id FROM statements WHERE id = ?').bind(seg[2]).first();
+      if (!owner || !mine.includes(owner.tenant_id)) throw new HttpError(404, 'Statement not found');
+      const [s] = await statementRenderData(db, { statementId: seg[2], onlyFinalized: true });
       if (!s) throw new HttpError(404, 'Statement not found');
       return pdfResponse(s);
     }
@@ -1129,7 +1157,7 @@ async function handle({ request, env }) {
 
   // ---- Settings → Security
   if (name === 'security') {
-    if (method === 'GET' && !id) return json({ ...(await loadSecurity(db)), hash_rounds: hashIterations(await getPlan(db)), plan: await getPlan(db) });
+    if (method === 'GET' && !id) { const plan = await getPlan(db); return json({ ...(await loadSecurity(db)), hash_rounds: hashIterations(plan), plan }); }
     if (method === 'PUT' && !id) return json(await saveSecurity(db, await body(request)));
     if (method === 'GET' && id === 'activity') return json(await signInActivity(db, { failedOnly: url.searchParams.get('failed') === '1' }));
     if (method === 'POST' && id === 'clear-lockouts') return json(await clearLockouts(db, (await body(request)).identifier || null));
@@ -1143,7 +1171,7 @@ async function handle({ request, env }) {
       // Everyone (staff and tenants) is signed out, except the person doing it.
       const who = (await body(request)).who;
       const sql = who === 'tenants' ? "DELETE FROM sessions WHERE user_type = 'tenant'"
-        : who === 'staff' ? "DELETE FROM sessions WHERE user_type = 'admin' AND token != ?"
+        : who === 'staff' ? "DELETE FROM sessions WHERE (user_type = 'admin' OR impersonated_by IS NOT NULL) AND token != ?"
         : 'DELETE FROM sessions WHERE token != ?';
       const st = db.prepare(sql);
       const r = await (who === 'tenants' ? st : st.bind(session.token)).run();
@@ -1156,6 +1184,8 @@ async function handle({ request, env }) {
     if (!id) return json(await systemInfo(db, request));
   }
   if (name === 'system' && method === 'PUT' && id === 'plan') return json(await setPlan(db, (await body(request)).plan));
+  // Recorded in the activity log by the request wrapper: a full backup is being downloaded.
+  if (name === 'system' && method === 'POST' && id === 'backup-log') return json({ ok: true });
   if (name === 'system' && method === 'GET') {
     if (id === 'backup') {
       const q = url.searchParams;
@@ -1189,7 +1219,7 @@ async function handle({ request, env }) {
       if (Number(id) === session.user_id) throw new HttpError(400, 'You cannot delete your own account');
       await db.batch([
         db.prepare('DELETE FROM admins WHERE id = ?').bind(id),
-        db.prepare("DELETE FROM sessions WHERE user_type = 'admin' AND user_id = ?").bind(id),
+        db.prepare("DELETE FROM sessions WHERE (user_type = 'admin' AND user_id = ?) OR impersonated_by = ?").bind(id, id),
       ]);
       return json({ ok: true });
     }

@@ -219,6 +219,10 @@ tests/             Calculation tests
 - Sign out all staff / all tenants / everyone, unlock locked-out emails, and a **sign-in activity** log
   (time, result, email, IP address, device), kept for 90 days.
 
+Lockouts apply per email **and** internet address (so a stranger can't lock someone out by guessing), with higher
+limits per email overall and per address. Session tokens and password-reset links are stored hashed. Reset emails are
+limited to 3 per hour per address. Backup downloads are recorded in the activity log.
+
 Always on: HTTPS only (HSTS), PBKDF2 password hashes, HttpOnly/Secure/SameSite=Strict cookies, a strict
 Content-Security-Policy (no outside scripts, no framing), JSON-only API (blocks cross-site form posts), and changing a
 password signs out that person's other devices.

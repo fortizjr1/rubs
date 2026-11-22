@@ -135,6 +135,12 @@ label { display: block; font-size: .85rem; font-weight: 600; margin-bottom: .3re
 .modal { background: #fff; border-radius: 12px; width: min(720px, 100%); max-height: 92vh; overflow: auto; padding: 1.5rem; }
 .modal.wide { width: min(1000px, 100%); }
 .modal .footer { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
+.modal { position: relative; }
+.modal-x { position: absolute; top: .6rem; right: .6rem; width: 2.2rem; height: 2.2rem; padding: 0; justify-content: center;
+  border: 0; background: transparent; font-size: 1.6rem; line-height: 1; color: var(--muted); border-radius: 50%; }
+.modal-x:hover { background: #f2f4f7; color: var(--text); }
+.modal > h2:first-of-type { padding-right: 2.2rem; }
+body.modal-open { overflow: hidden; }
 .error { background: #fef3f2; color: var(--danger); padding: .6rem .8rem; border-radius: 8px; margin-bottom: .8rem; }
 .notice { background: #eff4ff; color: #1d2939; padding: .75rem 1rem; border-radius: 8px; margin-bottom: 1rem; }
 
@@ -434,13 +440,31 @@ dl.kv dd { overflow-wrap: anywhere; }
 .discount-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1rem; }
 .discount-grid .full { grid-column: 1 / -1; }
 .discount-box [data-discount-preview] { margin: .1rem 0 .4rem; }
+.discount-box [data-discount-preview]:empty { display: none; }
 .discount-text { color: var(--ok); display: block; }
 .discount-stat .value { color: var(--ok); }
 
-/* phones: the batch form fits the screen (no sideways scrolling) */
+/* phones: pop-up windows become full-screen sheets with the buttons always visible */
 @media (max-width: 600px) {
-  .modal-bg { padding: .5rem; }
-  .modal { padding: 1rem; overflow-x: hidden; }
+  .modal-bg { padding: 0; place-items: stretch; }
+  .modal, .modal.wide {
+    width: 100%; height: 100vh; height: 100dvh; max-height: none; border-radius: 0;
+    padding: 1rem 1rem 0; overflow-x: hidden; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  }
+  .modal-x { top: .5rem; right: .5rem; }
+  /* labels the hidden table header used to give */
+  table.lines td.amt::before { content: 'Amount on bill'; display: block; font-size: .8rem; font-weight: 600; color: var(--muted); margin-top: .3rem; }
+  table.lines td.inc { display: flex; align-items: center; gap: .5rem; }
+  table.lines td.inc::after { content: 'Include in this batch'; font-size: .9rem; }
+  table.lines td.inc input[type=checkbox] { margin-top: 0; }
+  .modal > h2:first-of-type { padding-right: 2.4rem; margin-top: .2rem; }
+  /* Cancel / Save stay at the bottom of the screen, above Safari's toolbar */
+  .modal .footer { position: sticky; bottom: 0; z-index: 2; margin: 1rem -1rem 0; padding: .75rem 1rem calc(.75rem + env(safe-area-inset-bottom));
+    background: #fff; border-top: 1px solid var(--line); box-shadow: 0 -4px 12px rgba(16,24,40,.06); }
+  .modal .footer button { flex: 1; justify-content: center; min-height: 2.9rem; }
+  /* 16px text stops iPhone Safari from zooming in when a field is tapped */
+  input, select, textarea { font-size: 16px; }
+  .field { margin-bottom: .75rem; }
   .discount-grid { grid-template-columns: 1fr; }
   table.lines, table.lines tbody, table.lines tfoot, table.lines tr { display: block; width: 100%; }
   table.lines thead { display: none; }

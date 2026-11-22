@@ -89,7 +89,7 @@ export async function runForm(values = {}) {
             <option value="none">No discount</option>
             <option value="pct" ${values.discount_type === 'pct' ? 'selected' : ''}>Percent off the utility bill</option>
             <option value="amount" ${values.discount_type === 'amount' ? 'selected' : ''}>Dollar amount off the utility bill</option></select></div>
-          <div class="field" data-discount-only><label data-discount-label>Amount</label><input type="number" step="0.01" min="0" name="discount_input"
+          <div class="field" data-discount-only><label data-discount-label>Amount</label><input type="number" inputmode="decimal" step="0.01" min="0" name="discount_input"
             value="${values.discount_type === 'pct' ? (values.discount_value / 100) : values.discount_type === 'amount' ? (values.discount_value / 100).toFixed(2) : ''}"></div>
           <div class="field full" data-discount-only><label>Reason (staff only, not shown to residents)</label>
             <input name="discount_note" value="${esc(values.discount_note || '')}" placeholder="e.g. Pool leak in October"></div>
@@ -125,13 +125,13 @@ export async function runForm(values = {}) {
       : `${split.length ? `<table class="lines"><thead><tr><th>Utility</th><th>Split rule</th><th class="num">Amount on bill</th></tr></thead><tbody>
         ${split.map((u) => `<tr><td><b>${esc(u.utility_name)}</b>${shownAs(u)}</td>
           <td class="small muted">${esc(chargeRule(u))}</td>
-          <td class="num"><input type="number" step="0.01" min="0" data-util="${u.id}" placeholder="0.00"
+          <td class="num amt"><input type="number" inputmode="decimal" step="0.01" min="0" data-util="${u.id}" placeholder="0.00"
             value="${existing.has(u.id) ? (existing.get(u.id) / 100).toFixed(2) : ''}"></td></tr>`).join('')}
         </tbody><tfoot><tr><td colspan="2">Bill total</td><td class="num" data-total></td></tr></tfoot></table>` : ''}
         ${fixed.length ? `<table class="lines mt-sm"><thead><tr><th>Fixed monthly charges <span class="muted small">(from the property's settings)</span></th><th>Amount</th><th class="num">Include</th></tr></thead><tbody>
           ${fixed.map((u) => `<tr><td><b>${esc(u.utility_name)}</b>${shownAs(u)}</td>
             <td class="small muted">${esc(chargeRule(u))}</td>
-            <td class="num"><input type="checkbox" data-fixed="${u.id}" ${!editing || existing.has(u.id) ? 'checked' : ''} aria-label="Include ${esc(u.utility_name)}"></td></tr>`).join('')}
+            <td class="num inc"><input type="checkbox" data-fixed="${u.id}" ${!editing || existing.has(u.id) ? 'checked' : ''} aria-label="Include ${esc(u.utility_name)}"></td></tr>`).join('')}
           </tbody></table>
           <p class="small muted m0">These come from the property's <b>Fixed monthly charges</b> and are added to every resident automatically. Untick one only if it shouldn't be on this batch, e.g. it's already billed in another batch for the same period.</p>` : ''}`;
     const updateTotal = () => {

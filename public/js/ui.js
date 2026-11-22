@@ -60,11 +60,17 @@ export function toast(msg, isError = false) {
   toastTimer = setTimeout(() => (el.hidden = true), isError ? 6000 : 3000);
 }
 
-export function closeModal() { document.getElementById('modal-root').innerHTML = ''; }
+export function closeModal() {
+  document.getElementById('modal-root').innerHTML = '';
+  document.body.classList.remove('modal-open');
+}
 
 export function modal(html, { wide = false } = {}) {
   const root = document.getElementById('modal-root');
-  root.innerHTML = `<div class="modal-bg"><div class="modal ${wide ? 'wide' : ''}" role="dialog">${html}</div></div>`;
+  // The ✕ button matters most on phones, where the window fills the screen.
+  root.innerHTML = `<div class="modal-bg"><div class="modal ${wide ? 'wide' : ''}" role="dialog" aria-modal="true">
+    <button type="button" class="modal-x" data-close aria-label="Close">×</button>${html}</div></div>`;
+  document.body.classList.add('modal-open'); // stop the page behind from scrolling
   const bg = root.firstElementChild;
   bg.addEventListener('mousedown', (e) => { if (e.target === bg) closeModal(); });
   bg.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', closeModal));

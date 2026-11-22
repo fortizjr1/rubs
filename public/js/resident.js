@@ -10,6 +10,7 @@ function howCalculated(st) {
     ? `<div class="how-item"><b>${esc(c.utility_name)}</b>: fixed charge of ${money(c.detail.amount_cents)} per billing period${c.detail.prorate && c.days < c.period_days
       ? `, prorated for the ${c.days} of ${c.period_days} days you lived there → ${money(c.share_cents)}` : ''}.${c.tax_cents ? ` Tax: ${money(c.tax_cents)}.` : ''}</div>`
     : `<div class="how-item"><b>${esc(c.utility_name)}</b>: the property's bill was ${money(c.bill_total_cents)}.
+    ${c.detail?.discount_cents != null && c.bill_discount_cents ? `It was reduced by a ${money(c.bill_discount_cents)} discount before it was split, so ${money(c.bill_total_cents - c.bill_discount_cents)} was shared. Your discount: ${money(c.detail.discount_cents)}.` : ''}
     ${c.detail ? `${c.detail.recovery_pct}% of it is shared by residents.` : ''} You were billed for ${c.days} of ${c.period_days} days.
     ${(c.detail?.bases || []).map((d) => `${d.weight_pct}% is split by ${BASIS[d.basis]}: your factor ${d.factor} × ${d.days} days = ${d.ratio_pct}% of that part → ${money(d.share_cents)}.`).join(' ')}
     ${c.tax_cents ? `Tax: ${money(c.tax_cents)}.` : ''}</div>`)).join('');
@@ -23,7 +24,8 @@ function statementCard(st, moveOut) {
         <div class="muted small">Statement ${date(st.statement_date)} · Due by ${date(st.due_date)}</div></div>
       <div class="stmt-total">${money(st.total_cents)}</div>
     </div>
-    <ul class="stmt-lines">${st.lines.map((l) => `<li><span>${esc(l.label)}</span><span>${money(l.amount_cents)}</span></li>`).join('')}</ul>
+    <ul class="stmt-lines">${st.lines.map((l) => `<li><span>${esc(l.label)}${l.discount_cents > 0
+      ? `<span class="discount-text small">Discount applied: ${money(l.discount_cents)} off (was ${money(l.original_cents)})</span>` : ''}</span><span>${money(l.amount_cents)}</span></li>`).join('')}</ul>
     <div class="stmt-foot">
       <details><summary>How was this calculated?</summary><div class="small how">${howCalculated(st)}</div></details>
       <a class="btn" href="${pdfUrl(st)}" target="_blank" rel="noopener">${ICONS.download}<span>PDF</span></a>

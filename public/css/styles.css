@@ -427,3 +427,27 @@ dl.kv dd { overflow-wrap: anywhere; }
 /* ALTCHA widget on the sign-in forms */
 .altcha-wrap { margin: .25rem 0 1rem; }
 .altcha-wrap altcha-widget { display: block; --altcha-max-width: 100%; }
+
+/* owner discount on a billing batch */
+.discount-box { border: 1px dashed #c7d7fe; background: #f8faff; border-radius: 10px; padding: .85rem 1rem; margin: .75rem 0 .25rem; }
+.discount-head { margin-bottom: .6rem; }
+.discount-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1rem; }
+.discount-grid .full { grid-column: 1 / -1; }
+.discount-box [data-discount-preview] { margin: .1rem 0 .4rem; }
+.discount-text { color: var(--ok); display: block; }
+.discount-stat .value { color: var(--ok); }
+
+/* phones: the batch form fits the screen (no sideways scrolling) */
+@media (max-width: 600px) {
+  .modal-bg { padding: .5rem; }
+  .modal { padding: 1rem; overflow-x: hidden; }
+  .discount-grid { grid-template-columns: 1fr; }
+  table.lines, table.lines tbody, table.lines tfoot, table.lines tr { display: block; width: 100%; }
+  table.lines thead { display: none; }
+  table.lines tr { padding: .55rem .6rem; border-bottom: 1px solid var(--line); }
+  table.lines td { display: block; border: 0; padding: .15rem 0; text-align: left; }
+  table.lines td.num { text-align: left; }
+  table.lines input[type=number] { width: 100%; text-align: left; margin-top: .3rem; }
+  table.lines tfoot tr { display: flex; justify-content: space-between; }
+  table.lines input[type=checkbox] { width: auto; margin-top: .3rem; }
+}

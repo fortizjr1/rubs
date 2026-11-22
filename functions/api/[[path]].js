@@ -920,7 +920,7 @@ async function handle({ request, env }) {
          WHERE s.tenant_id = ? AND r.status = 'finalized' ORDER BY r.period_end DESC, s.id DESC`,
       ).bind(tid).all()).results;
       const charges = (await db.prepare(
-        `SELECT c.statement_id, c.days, c.period_days, c.share_cents, c.tax_cents, c.detail, b.total_cents AS bill_total_cents, pu.utility_name
+        `SELECT c.statement_id, c.days, c.period_days, c.share_cents, c.tax_cents, c.detail, b.total_cents AS bill_total_cents, json_extract(b.calc_summary, '$.discount_cents') AS bill_discount_cents, pu.utility_name
          FROM charges c JOIN bills b ON b.id = c.bill_id JOIN property_utilities pu ON pu.id = b.property_utility_id
          JOIN billing_runs r ON r.id = b.billing_run_id
          WHERE c.tenant_id = ? AND r.status = 'finalized' ORDER BY pu.sort_order, pu.id`,

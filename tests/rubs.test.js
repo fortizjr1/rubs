@@ -179,3 +179,13 @@ test('penny rounding per resident; owner absorbs the rounding', () => {
   assert.deepEqual(r.lines.map((l) => l.share_cents), [33, 33, 33]);
   assert.equal(r.summary.vacancy_cents, 1); // the leftover cent stays with the owner
 });
+
+test('splitCents spreads an owner discount across bills to the exact penny', async () => {
+  const { splitCents } = await import('../lib/rubs.js');
+  assert.deepEqual(splitCents(20000, [150000, 50000]), [15000, 5000]);
+  const parts = splitCents(1001, [333, 333, 334]);
+  assert.equal(parts.reduce((s, v) => s + v, 0), 1001);
+  assert.deepEqual(splitCents(100, [0, 0]), [0, 0]);
+  const odd = splitCents(777, [12345, 6789, 1]);
+  assert.equal(odd.reduce((s, v) => s + v, 0), 777);
+});

@@ -13,6 +13,9 @@ const lineLabel = (u) => (u.statement_label || '').trim() || u.utility_name;
 // Short description of how a utility or charge is billed.
 const chargeRule = describeRule;
 
+// Owner discount label, e.g. "10%" or "$200.00".
+const discountLabel = (type, value) => (type === 'pct' ? `${(value / 100).toLocaleString('en-US', { maximumFractionDigits: 2 })}%` : type === 'amount' ? money(value) : '');
+
 
 // --------------------------------------------------------------- list
 
@@ -77,6 +80,22 @@ export async function runForm(values = {}) {
       <div class="field"><label>Service period end *</label><input type="date" name="period_end" required value="${esc(values.period_end || '')}"></div>
       <h3 class="full form-heading">Charges for this batch</h3>
       <div class="full" data-lines></div>
+      <div class="full discount-box" data-discount-box>
+        <div class="discount-head"><b>Owner discount</b> <span class="muted small">(optional) — e.g. a courtesy credit after a pool leak</span></div>
+        <div class="discount-grid">
+          <div class="field"><label>Discount</label><select name="discount_type">
+            <option value="none">No discount</option>
+            <option value="pct" ${values.discount_type === 'pct' ? 'selected' : ''}>Percent off the utility bill</option>
+            <option value="amount" ${values.discount_type === 'amount' ? 'selected' : ''}>Dollar amount off the utility bill</option></select></div>
+          <div class="field" data-discount-only><label data-discount-label>Amount</label><input type="number" step="0.01" min="0" name="discount_input"
+            value="${values.discount_type === 'pct' ? (values.discount_value / 100) : values.discount_type === 'amount' ? (values.discount_value / 100).toFixed(2) : ''}"></div>
+          <div class="field full" data-discount-only><label>Reason (staff only, not shown to residents)</label>
+            <input name="discount_note" value="${esc(values.discount_note || '')}" placeholder="e.g. Pool leak in October"></div>
+        </div>
+        <p class="small m0" data-discount-preview></p>
+        <p class="small muted m0" data-discount-only>Taken off the utility bill before it is split, so every resident's utility charge is lower.
+          Fixed charges are not discounted. Statements show "Discount applied" with the amount saved, but never the reason.</p>
+      </div>
       <h3 class="full form-heading">Statement dates</h3>
       <div class="field"><label>Statement date</label><input type="date" name="statement_date" value="${esc(values.statement_date || new Date().toISOString().slice(0, 10))}"></div>
       <div class="field"><label>Due date</label><input type="date" name="due_date" value="${esc(values.due_date || '')}">
@@ -118,11 +137,34 @@ export async function runForm(values = {}) {
       const t = [...linesEl.querySelectorAll('[data-util]')].reduce((s, i) => s + Math.round(Number(i.value || 0) * 100), 0);
       const el = linesEl.querySelector('[data-total]');
       if (el) el.textContent = money(t);
+      updateDiscount();
     };
     linesEl.querySelectorAll('[data-util]').forEach((i) => i.addEventListener('input', updateTotal));
     linesEl.querySelectorAll('[data-close]').forEach((a) => a.addEventListener('click', closeModal));
     updateTotal();
   }
+  // Owner discount: show the value field only when a discount is picked, and preview the result.
+  const billTotal = () => [...linesEl.querySelectorAll('[data-util]')].reduce((s, i) => s + Math.round(Number(i.value || 0) * 100), 0);
+  const discountCentsFor = (type, raw, total) => {
+    const v = Number(raw);
+    if (!(v > 0)) return 0;
+    return type === 'pct' ? Math.round((total * Math.min(v, 100)) / 100) : Math.min(Math.round(v * 100), total);
+  };
+  function updateDiscount() {
+    const type = form.elements.discount_type.value;
+    const on = type !== 'none';
+    m.querySelectorAll('[data-discount-only]').forEach((e) => (e.hidden = !on));
+    m.querySelector('[data-discount-label]').textContent = type === 'pct' ? 'Percent off (%)' : 'Amount off ($)';
+    form.elements.discount_input.placeholder = type === 'pct' ? '10' : '200.00';
+    form.elements.discount_input.max = type === 'pct' ? '100' : '';
+    const total = billTotal();
+    const d = on ? discountCentsFor(type, form.elements.discount_input.value, total) : 0;
+    m.querySelector('[data-discount-preview]').innerHTML = on && total && d
+      ? `Residents' share will be split from <b>${money(total - d)}</b> instead of ${money(total)}. The owner covers <b>${money(d)}</b>.`
+      : on && !total ? '<span class="muted">Enter the utility bill amounts above first.</span>' : '';
+  }
+  form.elements.discount_type.addEventListener('change', updateDiscount);
+  form.elements.discount_input.addEventListener('input', updateDiscount);
   form.elements.property_id.addEventListener('change', renderLines);
   await renderLines();
 
@@ -134,6 +176,12 @@ export async function runForm(values = {}) {
     err.hidden = true;
     const data = Object.fromEntries([...new FormData(form)].map(([k, v]) => [k, v === '' ? null : v]));
     data.property_id = form.elements.property_id.value;
+    delete data.discount_input;
+    if (data.discount_type && data.discount_type !== 'none') {
+      const v = Number(form.elements.discount_input.value);
+      if (!(v > 0)) { err.textContent = 'Enter the discount amount, or choose "No discount".'; err.hidden = false; btn.disabled = false; return; }
+      data.discount_value = data.discount_type === 'pct' ? Math.round(v * 100) : Math.round(v * 100);
+    } else { data.discount_type = null; data.discount_note = null; }
     data.lines = [
       ...[...linesEl.querySelectorAll('[data-util]')].filter((i) => i.value !== '')
         .map((i) => ({ property_utility_id: Number(i.dataset.util), total_cents: Math.round(Number(i.value) * 100) })),
@@ -194,11 +242,15 @@ export async function runDetailPage(root, id) {
     ${r.status === 'calculated' ? '<div class="notice">Review the statements below. Click a <b>PDF</b> link to preview one. When everything looks right, click <b>Finalize statements</b>. Finalized statements can be emailed and exported, and residents can see them in the portal. If you change tenants, units or split rules, click <b>Recalculate</b> first.</div>' : ''}
     ${r.status === 'draft' ? '<div class="notice">This batch has not been calculated yet. Click <b>Calculate</b>.</div>' : ''}
     ${s ? `<div class="grid cards mb">
-      <div class="card stat"><div class="label">Utility bill total</div><div class="value">${money(s.city_total_cents)}</div></div>
+      <div class="card stat"><div class="label">Utility bill total</div><div class="value">${money(s.city_total_cents)}</div>
+        ${s.discount_cents ? `<div class="muted small">Split after the owner discount: ${money(s.city_total_cents - s.discount_cents)}</div>` : ''}</div>
+      ${s.discount_cents ? `<div class="card stat discount-stat"><div class="label">Owner discount</div><div class="value">−${money(s.discount_cents)}</div>
+        <div class="muted small">${esc(discountLabel(s.discount_type, s.discount_value))} off the utility bill · residents save ${money(s.resident_discount_cents || 0)}
+        ${r.discount_note ? `<br>Reason (staff only): ${esc(r.discount_note)}` : ''}</div></div>` : ''}
       <div class="card stat"><div class="label">Billed to residents</div><div class="value">${money(s.billed_cents)}</div>
         <div class="muted small">${money((s.rubs_share_cents ?? s.resident_share_cents))} utilities${s.fixed_cents ? ` + ${money(s.fixed_cents)} fixed charges` : ''}${s.tax_cents ? ` + ${money(s.tax_cents)} tax` : ''}${s.fee_cents ? ` + ${money(s.fee_cents)} fees` : ''}</div></div>
       <div class="card stat"><div class="label">Owner cost</div><div class="value">${money(s.owner_cost_cents)}</div>
-        <div class="muted small">${money(s.common_area_cents)} common area + ${money(s.vacancy_cents)} vacant units</div></div>
+        <div class="muted small">${money(s.common_area_cents)} common area + ${money(s.vacancy_cents)} vacant units${s.discount_cents ? ` + ${money(s.discount_cents)} owner discount` : ''}</div></div>
       <div class="card stat"><div class="label">Statements</div><div class="value">${s.statements}</div>
         <div class="muted small">${r.statements.length - emailable.length} without email (print these)</div></div>
     </div>` : ''}
@@ -223,7 +275,10 @@ export async function runDetailPage(root, id) {
         ...utilNames.map((n) => ({ label: n, value: (st) => money(lineAmt(st, (l) => l.kind === 'utility' && l.label === n)), cls: 'num' })),
         ...(hasTax ? [{ label: 'Tax', value: (st) => money(lineAmt(st, (l) => l.kind === 'tax')), cls: 'num' }] : []),
         ...(hasFee ? [{ label: 'Fee', value: (st) => money(lineAmt(st, (l) => l.kind === 'fee')), cls: 'num' }] : []),
-        { label: 'Total', value: (st) => `<b>${money(st.total_cents)}</b>`, cls: 'num' },
+        { label: 'Total', value: (st) => {
+          const d = st.lines.reduce((t, l) => t + (l.discount_cents || 0), 0);
+          return `<b>${money(st.total_cents)}</b>${d ? `<div class="small discount-text">−${money(d)} discount</div>` : ''}`;
+        }, cls: 'num' },
         { label: 'Email', value: (st) => !st.email ? '<span class="badge draft">no email</span>'
           : st.emailed_at ? `<span class="badge posted" title="${esc(st.email_to)}">sent ${date(st.emailed_at)}</span>`
           : st.email_error ? `<span class="badge danger" title="${esc(st.email_error)}">failed</span><div class="small muted">${esc(st.email_error).slice(0, 80)}</div>`

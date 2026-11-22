@@ -35,6 +35,17 @@ function defaultQuestions(p) {
   return `${contact} Please report any change in the number of occupants in your apartment.`;
 }
 
+/**
+ * Owner discount, as residents see it: lines carry discount_cents / original_cents when the
+ * utility bill was lowered before it was split. The reason is never included.
+ */
+export const discountCents = (lines) => (lines || []).reduce((s, l) => s + (l.discount_cents > 0 ? l.discount_cents : 0), 0);
+export function discountSentence(lines) {
+  const d = (lines || []).filter((l) => l.discount_cents > 0);
+  if (!d.length) return '';
+  return `A discount of ${usd(discountCents(d))} was applied to your utility charges this period (${d.map((l) => `${l.label} was ${usd(l.original_cents)}`).join(', ')}).`;
+}
+
 export function fillTemplate(text, vars) {
   return String(text || '').replace(/\{(\w+)\}/g, (m, k) => (vars[k] !== undefined && vars[k] !== null ? String(vars[k]) : ''));
 }
@@ -97,15 +108,23 @@ function drawStatement(page, s) {
   else if (s.final) page.text('Final bill', R - 8, y, { size: 8, color: MUTED, align: 'right' });
   y += 8;
   s.lines.forEach((ln, i) => {
-    if (i % 2 === 0) page.rect(L, y, R - L, 18, GRAY_BG);
+    const h = ln.discount_cents > 0 ? 28 : 18;
+    if (i % 2 === 0) page.rect(L, y, R - L, h, GRAY_BG);
     page.text(ln.label, L + 8, y + 12.5, { size: 9.5, color: TEXT });
     page.text(usd(ln.amount_cents), R - 8, y + 12.5, { size: 9.5, color: TEXT, align: 'right' });
-    y += 18;
+    if (ln.discount_cents > 0) {
+      page.text(`Discount applied: ${usd(ln.discount_cents)} off (was ${usd(ln.original_cents)})`, L + 16, y + 23, { size: 7.5, color: MUTED });
+    }
+    y += h;
   });
   page.line(L, y + 1, R, y + 1, GRAY_LINE, 1);
   y += 17;
   page.text('Total for this statement', L + 8, y, { size: 9.5, weight: 'bold', color: TEXT });
   page.text(usd(s.total_cents), R - 8, y, { size: 9.5, weight: 'bold', color: TEXT, align: 'right' });
+  if (discountCents(s.lines)) {
+    y += 13;
+    page.text(`Includes a discount of ${usd(discountCents(s.lines))}.`, R - 8, y, { size: 7.5, color: MUTED, align: 'right' });
+  }
 
   // Payment
   y += 34;
